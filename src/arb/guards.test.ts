@@ -2,7 +2,7 @@ import { Interface } from "ethers";
 import { describe, expect, it } from "vitest";
 import { ERC20_ABI } from "./abis";
 import { APP_CONFIG, NATIVE_COTI } from "./config";
-import { assertAllowedPlan, assertAllowedStep } from "./guards";
+import { assertAllowedPlan, assertAllowedRebalancePlan, assertAllowedStep } from "./guards";
 import type { PreparedStep } from "./types";
 import { isAllowedWallet } from "./utils";
 
@@ -78,5 +78,32 @@ describe("transaction guards", () => {
       step({ chain: "coti", type: "carbon-swap", tx: { data: "0x1234", from: APP_CONFIG.allowedWallet, to: APP_CONFIG.carbonController, value: "0x0" } }),
       step({ chain: "ethereum", type: "uniswap-swap", tx: { data: "0x1234", from: APP_CONFIG.allowedWallet, to: APP_CONFIG.uniswap.router, value: "0x0" } }),
     ], carbonTokens)).toThrow(/Uniswap first/i);
+  });
+
+  it("allows only official bridge recipients for rebalance transfers", () => {
+    const ethBridge = step({
+      chain: "ethereum",
+      tx: {
+        data: erc20.encodeFunctionData("transfer", [APP_CONFIG.bridge.ethereumRecipient, 100n]),
+        from: APP_CONFIG.allowedWallet,
+        to: APP_CONFIG.uniswap.coti,
+        value: "0x0",
+      },
+      type: "bridge-transfer",
+    });
+    expect(() => assertAllowedRebalancePlan([ethBridge], "0x7637C7838EC4Ec6b85080F28A678F8E234bB83D1")).not.toThrow();
+    expect(() => assertAllowedPlan([ethBridge], carbonTokens)).toThrow(/Bridge transfers/i);
+
+    const badRecipient = step({
+      chain: "ethereum",
+      tx: {
+        data: erc20.encodeFunctionData("transfer", ["0x0000000000000000000000000000000000000001", 100n]),
+        from: APP_CONFIG.allowedWallet,
+        to: APP_CONFIG.uniswap.coti,
+        value: "0x0",
+      },
+      type: "bridge-transfer",
+    });
+    expect(() => assertAllowedRebalancePlan([badRecipient], "0x7637C7838EC4Ec6b85080F28A678F8E234bB83D1")).toThrow(/official bridge/i);
   });
 });

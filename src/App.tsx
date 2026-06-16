@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { APP_CONFIG } from "./arb/config";
-import { buildQuote, preparePlan } from "./arb/engine";
-import type { PairId, PreparedPlan, QuoteResult } from "./arb/types";
+import { buildQuote, preparePlan, prepareRebalancePlan } from "./arb/engine";
+import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSuggestion } from "./arb/types";
 import { connectProvider, currentAccount, discoverProviders, switchChain, type ProviderEntry } from "./arb/wallet";
 import { explorerTx, isAllowedWallet, numberFmt, shortAddress, usdFmt } from "./arb/utils";
 import "./index.css";
@@ -33,6 +33,12 @@ function pairTitle(pairId: PairId): string {
   return pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC";
 }
 
+function rebalanceText(rebalance: RebalanceSuggestion | null): string {
+  if (!rebalance) return "Quote first.";
+  if (!rebalance.executable) return rebalance.reason || "No rebalance needed.";
+  return `Bridge ${numberFmt(rebalance.amount)} ${rebalance.tokenSymbol}.`;
+}
+
 function chainLabel(chainId: number | null): string {
   if (chainId === APP_CONFIG.ethereum.chainId) return "Ethereum";
   if (chainId === APP_CONFIG.coti.chainId) return "COTI";
@@ -46,7 +52,7 @@ function App() {
   const [chainId, setChainId] = useState<number | null>(null);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [selectedPair, setSelectedPair] = useState<PairId>("coti-gcoti");
-  const [prepared, setPrepared] = useState<PreparedPlan | null>(null);
+  const [prepared, setPrepared] = useState<PreparedWalletPlan | null>(null);
   const [progress, setProgress] = useState<TxProgress[]>([]);
   const [flow, setFlow] = useState<FlowState>("idle");
   const [message, setMessage] = useState("Connect wallet.");
@@ -59,6 +65,7 @@ function App() {
   );
   const allowed = account ? isAllowedWallet(account) : false;
   const selectedOpportunity = quote?.opportunities.find((item) => item.pairId === selectedPair) || null;
+  const rebalance = quote?.rebalance || null;
 
   useEffect(() => {
     discoverProviders().then((items) => {
@@ -153,6 +160,32 @@ function App() {
     }
   }, [account, allowed, selectedOpportunity, selectedPair]);
 
+  const reviewRebalance = useCallback(async () => {
+    if (!account || !allowed) {
+      setMessage("Connect wallet first.");
+      return;
+    }
+    try {
+      setFlow("loading");
+      setProgress([]);
+      setMessage("Preparing rebalance...");
+      const plan = await prepareRebalancePlan(account);
+      setPrepared(plan);
+      setProgress(plan.steps.map((step) => ({
+        chain: step.chain,
+        index: step.index,
+        label: step.label,
+        message: "Waiting for signature",
+        status: "waiting",
+      })));
+      setFlow("ready");
+      setMessage("Rebalance prepared.");
+    } catch (error) {
+      setFlow("error");
+      setMessage(parseError(error));
+    }
+  }, [account, allowed]);
+
   const sign = useCallback(async () => {
     if (!selectedProvider || !prepared) return;
     try {
@@ -187,7 +220,7 @@ function App() {
         setProgress((items) => items.map((item) => item.index === step.index ? { ...item, hash, message: "Submitted", status: "success" } : item));
       }
       setFlow("success");
-      setMessage("Submitted. Refresh before trading again.");
+      setMessage(prepared.kind === "rebalance" ? "Bridge submitted. Track before rebalancing again." : "Submitted. Refresh before trading again.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
@@ -293,6 +326,27 @@ function App() {
           ) : (
             <div className="empty">Connect wallet and quote.</div>
           )}
+
+          <section className="rebalance-card">
+            <div className="review-head">
+              <div>
+                <h3>Rebalance 50/50</h3>
+                <p>{rebalanceText(rebalance)}</p>
+              </div>
+              {rebalance ? <span className={rebalance.executable ? "pill ok" : "pill blocked"}>{rebalance.executable ? "ready" : "blocked"}</span> : null}
+            </div>
+            {rebalance?.executable ? (
+              <div className="rebalance-details">
+                <span>{rebalance.sourceChain} -&gt; {rebalance.targetChain}</span>
+                <strong>{numberFmt(rebalance.amount)} {rebalance.tokenSymbol}</strong>
+                <small>{rebalance.cappedByTestMode ? `test cap ${numberFmt(rebalance.testCap)} ${rebalance.tokenSymbol}` : "full 50/50 amount"}</small>
+              </div>
+            ) : null}
+            <div className="button-row">
+              <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !rebalance?.executable || flow === "loading" || flow === "signing"}>Rebalance</button>
+              <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Refresh</button>
+            </div>
+          </section>
 
           {prepared ? (
             <div className="sign-card">

@@ -4,7 +4,7 @@ import { Toolkit } from "@bancor/carbon-sdk/strategy-management";
 import { Contract, Interface, JsonRpcProvider, formatEther, formatUnits, getAddress } from "ethers";
 import { ERC20_ABI, UNISWAP_FACTORY_ABI, UNISWAP_ROUTER_ABI } from "./abis";
 import { APP_CONFIG, NATIVE_COTI, ZERO_ADDRESS } from "./config";
-import { assertAllowedPlan } from "./guards";
+import { assertAllowedPlan, assertAllowedRebalancePlan } from "./guards";
 import type {
   AllowanceState,
   CarbonContext,
@@ -12,7 +12,10 @@ import type {
   Opportunity,
   PairId,
   PreparedPlan,
+  PreparedRebalancePlan,
   PreparedStep,
+  RebalanceSuggestion,
+  RebalanceTokenId,
   TokenBalance,
   WalletState,
 } from "./types";
@@ -33,6 +36,8 @@ const ethProvider = new JsonRpcProvider(APP_CONFIG.ethRpcUrl);
 const cotiProvider = new JsonRpcProvider(APP_CONFIG.cotiRpcUrl);
 const GAS_UNITS = {
   erc20Approval: 55000,
+  bridgeNative: 21000,
+  bridgeToken: 70000,
   uniswapSwap: 180000,
   carbonSwap: 350000,
 } as const;
@@ -280,6 +285,90 @@ function sourceInfo(state: WalletState, pairId: PairId, direction: Direction) {
     : { source: state.balances.coti.tokens.usdc, opposite: state.balances.ethereum.tokens.coti };
 }
 
+function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): RebalanceSuggestion {
+  const tokenSymbol = tokenId === "coti" ? "COTI" : "gCOTI";
+  const ethBalance = state.balances.ethereum.tokens[tokenId].value;
+  const cotiBalance = state.balances.coti.tokens[tokenId].value;
+  const total = ethBalance + cotiBalance;
+  const testCap = APP_CONFIG.rebalanceTestCaps[tokenId];
+  if (total <= 0) {
+    return {
+      amount: 0,
+      cappedByTestMode: false,
+      direction: null,
+      executable: false,
+      reason: `No ${tokenSymbol} balance found.`,
+      sourceBalance: 0,
+      targetBalance: 0,
+      testCap,
+      token: tokenId,
+      tokenSymbol,
+    };
+  }
+
+  const difference = ethBalance - cotiBalance;
+  const needed = Math.abs(difference) / 2;
+  const dust = tokenId === "coti" ? 0.5 : 5;
+  if (needed < dust) {
+    return {
+      amount: 0,
+      cappedByTestMode: false,
+      direction: null,
+      executable: false,
+      reason: `${tokenSymbol} is already close to 50/50.`,
+      sourceBalance: difference > 0 ? ethBalance : cotiBalance,
+      targetBalance: difference > 0 ? cotiBalance : ethBalance,
+      testCap,
+      token: tokenId,
+      tokenSymbol,
+    };
+  }
+
+  const sourceChain = difference > 0 ? "ethereum" : "coti";
+  const targetChain = difference > 0 ? "coti" : "ethereum";
+  const sourceBalance = sourceChain === "ethereum" ? ethBalance : cotiBalance;
+  const targetBalance = sourceChain === "ethereum" ? cotiBalance : ethBalance;
+  const amount = Math.min(needed, sourceBalance, testCap);
+  return {
+    amount,
+    cappedByTestMode: amount < needed,
+    direction: sourceChain === "ethereum" ? "ethereum-to-coti" : "coti-to-ethereum",
+    executable: amount > 0,
+    recipient: sourceChain === "ethereum" ? APP_CONFIG.bridge.ethereumRecipient : APP_CONFIG.bridge.cotiRecipient,
+    sourceBalance,
+    sourceChain,
+    targetBalance,
+    targetChain,
+    testCap,
+    token: tokenId,
+    tokenSymbol,
+  };
+}
+
+function buildRebalanceSuggestion(state: WalletState): RebalanceSuggestion {
+  const candidates = (["coti", "gcoti"] as RebalanceTokenId[]).map((tokenId) => rebalanceCandidate(state, tokenId));
+  const executable = candidates.filter((candidate) => candidate.executable);
+  if (!executable.length) {
+    return {
+      amount: 0,
+      cappedByTestMode: false,
+      direction: null,
+      executable: false,
+      reason: candidates.map((candidate) => candidate.reason).filter(Boolean).join(" "),
+      sourceBalance: 0,
+      targetBalance: 0,
+      testCap: 0,
+      token: null,
+      tokenSymbol: null,
+    };
+  }
+  return executable.sort((a, b) => {
+    const aRelative = Math.abs(a.sourceBalance - a.targetBalance) / Math.max(a.sourceBalance + a.targetBalance, 1);
+    const bRelative = Math.abs(b.sourceBalance - b.targetBalance) / Math.max(b.sourceBalance + b.targetBalance, 1);
+    return bRelative - aRelative;
+  })[0];
+}
+
 function candidateAmounts(max: number, pairId: PairId, steps = 80): number[] {
   const probes = pairId === "coti-usdc" ? APP_CONFIG.probeUsdcAmounts : APP_CONFIG.probeCotiAmounts;
   const candidateSet = new Set<number>([max, ...probes]);
@@ -519,6 +608,62 @@ export async function buildQuote(walletAddress: string) {
     allowances: state.allowances,
     opportunities: byPair,
     prices: price,
+    rebalance: buildRebalanceSuggestion(state),
+  };
+}
+
+function rebalanceTokenAddress(state: WalletState, suggestion: RebalanceSuggestion): string {
+  if (!suggestion.token || !suggestion.sourceChain) throw new Error("No rebalance token selected.");
+  if (suggestion.sourceChain === "ethereum") return APP_CONFIG.uniswap[suggestion.token];
+  return suggestion.token === "coti" ? NATIVE_COTI : state.carbon.gcotiAddress;
+}
+
+function rebalanceSourceBalance(state: WalletState, suggestion: RebalanceSuggestion): TokenBalance {
+  if (!suggestion.token || !suggestion.sourceChain) throw new Error("No rebalance token selected.");
+  return state.balances[suggestion.sourceChain].tokens[suggestion.token];
+}
+
+async function buildRebalanceStep(state: WalletState, suggestion: RebalanceSuggestion): Promise<PreparedStep> {
+  if (!suggestion.executable || !suggestion.token || !suggestion.sourceChain || !suggestion.targetChain || !suggestion.recipient) {
+    throw new Error(suggestion.reason || "No rebalance action is available.");
+  }
+  const sourceBalance = rebalanceSourceBalance(state, suggestion);
+  const tokenAddress = rebalanceTokenAddress(state, suggestion);
+  const amountRaw = parseTokenAmount(suggestion.amount, sourceBalance.decimals);
+  const provider = suggestion.sourceChain === "ethereum" ? ethProvider : cotiProvider;
+  const isNative = isNativeToken(tokenAddress);
+  const data = isNative ? "0x" : erc20Interface.encodeFunctionData("transfer", [suggestion.recipient, amountRaw]);
+  const to = isNative ? suggestion.recipient : tokenAddress;
+  const value = isNative ? amountRaw : 0n;
+  const gasFallback = isNative ? GAS_UNITS.bridgeNative : GAS_UNITS.bridgeToken;
+  const gas = await provider.estimateGas({ from: state.owner, to, data, value })
+    .then((estimate) => gasWithBuffer(estimate, APP_CONFIG.gasLimitBufferBps))
+    .catch(() => BigInt(gasFallback));
+  return {
+    chain: suggestion.sourceChain,
+    description: `Bridge ${cleanAmount(suggestion.amount, 6)} ${suggestion.tokenSymbol} from ${suggestion.sourceChain} to ${suggestion.targetChain}.`,
+    index: 1,
+    label: `Rebalance ${suggestion.tokenSymbol}`,
+    token: suggestion.tokenSymbol || "",
+    tx: { from: state.owner, to, data, value: hexValue(value), gas: hexValue(gas) },
+    type: "bridge-transfer",
+  };
+}
+
+export async function prepareRebalancePlan(walletAddress: string): Promise<PreparedRebalancePlan> {
+  const state = await loadWalletState(walletAddress);
+  const suggestion = buildRebalanceSuggestion(state);
+  const step = await buildRebalanceStep(state, suggestion);
+  assertAllowedRebalancePlan([step], state.carbon.gcotiAddress);
+  return {
+    generatedAtUtc: new Date().toISOString(),
+    kind: "rebalance",
+    steps: [step],
+    suggestion,
+    wallet: state.owner,
+    warning: suggestion.cappedByTestMode
+      ? `Test mode: this bridge is capped to ${suggestion.testCap} ${suggestion.tokenSymbol}.`
+      : "Bridge transfer prepared. Wait for completion before rebalancing again.",
   };
 }
 
@@ -648,6 +793,7 @@ export async function preparePlan(walletAddress: string, pairId: PairId): Promis
   assertAllowedPlan(steps, [state.carbon.cotiAddress, state.carbon.gcotiAddress, state.carbon.usdcAddress]);
   return {
     generatedAtUtc: new Date().toISOString(),
+    kind: "arb",
     opportunity,
     pairId,
     steps,

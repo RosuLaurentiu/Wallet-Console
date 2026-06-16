@@ -23,6 +23,11 @@ function decodeApprovalSpender(data: string): string {
   return getAddress(String(decoded[0]));
 }
 
+function decodeTransferRecipient(data: string): string {
+  const decoded = erc20Interface.decodeFunctionData("transfer", data);
+  return getAddress(String(decoded[0]));
+}
+
 export function assertAllowedStep(step: PreparedStep, carbonTokens: string[]): void {
   const to = getAddress(step.tx.to);
   const value = BigInt(step.tx.value || 0);
@@ -52,6 +57,10 @@ export function assertAllowedStep(step: PreparedStep, carbonTokens: string[]): v
     return;
   }
 
+  if (step.type === "bridge-transfer") {
+    throw new Error("Bridge transfers are not allowed in arb trade plans.");
+  }
+
   throw new Error(`Unknown transaction step type: ${step.type}`);
 }
 
@@ -61,4 +70,42 @@ export function assertAllowedPlan(steps: PreparedStep[], carbonTokens: string[])
   if (swapOrder[0] !== "uniswap-swap" || swapOrder[1] !== "carbon-swap") {
     throw new Error("Prepared plan must execute Uniswap first and Carbon second.");
   }
+}
+
+export function assertAllowedRebalanceStep(step: PreparedStep, carbonGcotiAddress: string): void {
+  const to = getAddress(step.tx.to);
+  const value = BigInt(step.tx.value || 0);
+  if (step.type !== "bridge-transfer") throw new Error("Rebalance plan can only contain bridge transfers.");
+
+  if (step.chain === "ethereum") {
+    if (!sameAddress(to, APP_CONFIG.uniswap.coti) && !sameAddress(to, APP_CONFIG.uniswap.gcoti)) {
+      throw new Error("Ethereum bridge transfer uses an unknown token.");
+    }
+    if (!sameAddress(decodeTransferRecipient(step.tx.data), APP_CONFIG.bridge.ethereumRecipient)) {
+      throw new Error("Ethereum bridge transfer recipient is not the official bridge recipient.");
+    }
+    if (value !== 0n) throw new Error("Ethereum bridge token transfer unexpectedly sends native value.");
+    return;
+  }
+
+  if (step.chain === "coti") {
+    if (sameAddress(to, APP_CONFIG.bridge.cotiRecipient)) {
+      if (step.tx.data !== "0x") throw new Error("Native COTI bridge transfer unexpectedly includes calldata.");
+      if (value <= 0n) throw new Error("Native COTI bridge transfer has no value.");
+      return;
+    }
+    if (!sameAddress(to, carbonGcotiAddress)) throw new Error("COTI bridge transfer uses an unknown token.");
+    if (!sameAddress(decodeTransferRecipient(step.tx.data), APP_CONFIG.bridge.cotiRecipient)) {
+      throw new Error("COTI bridge transfer recipient is not the official bridge recipient.");
+    }
+    if (value !== 0n) throw new Error("COTI gCOTI bridge transfer unexpectedly sends native value.");
+    return;
+  }
+
+  throw new Error("Unknown rebalance chain.");
+}
+
+export function assertAllowedRebalancePlan(steps: PreparedStep[], carbonGcotiAddress: string): void {
+  if (steps.length !== 1) throw new Error("Rebalance plan must contain exactly one bridge transfer.");
+  assertAllowedRebalanceStep(steps[0], carbonGcotiAddress);
 }

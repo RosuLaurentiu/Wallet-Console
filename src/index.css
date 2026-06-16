@@ -391,6 +391,7 @@ small {
 }
 
 .review-card,
+.rebalance-card,
 .sign-card,
 .empty,
 .balances-collapse {
@@ -399,6 +400,28 @@ small {
   background: rgba(8, 7, 13, 0.44);
   padding: 10px;
   margin-top: 8px;
+}
+
+.rebalance-card {
+  border-color: rgba(34, 197, 94, 0.22);
+}
+
+.rebalance-details {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  background: rgba(34, 197, 94, 0.05);
+  margin-top: 8px;
+  padding: 8px;
+}
+
+.rebalance-details span,
+.rebalance-details small {
+  color: var(--muted);
+  font-size: 0.74rem;
 }
 
 .numbers,
@@ -583,6 +606,11 @@ small {
 
   .button-row {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .rebalance-details {
+    grid-template-columns: 1fr;
+    gap: 3px;
   }
 
   .status,

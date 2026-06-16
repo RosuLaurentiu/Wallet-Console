@@ -1,7 +1,8 @@
 export type PairId = "coti-gcoti" | "coti-usdc";
 export type ChainKey = "ethereum" | "coti";
-export type StepType = "approval" | "uniswap-swap" | "carbon-swap";
+export type StepType = "approval" | "uniswap-swap" | "carbon-swap" | "bridge-transfer";
 export type Direction = "buy_on_uniswap_sell_on_carbon" | "buy_on_carbon_sell_on_uniswap";
+export type RebalanceTokenId = "coti" | "gcoti";
 
 export interface TokenBalance {
   address: string;
@@ -93,6 +94,7 @@ export interface QuoteResult {
   allowances: WalletAllowances;
   opportunities: Opportunity[];
   prices: { cotiUsd: number | null; ethUsd: number | null };
+  rebalance: RebalanceSuggestion;
 }
 
 export interface PreparedStep {
@@ -107,12 +109,40 @@ export interface PreparedStep {
 
 export interface PreparedPlan {
   generatedAtUtc: string;
+  kind: "arb";
   opportunity: Opportunity;
   pairId: PairId;
   steps: PreparedStep[];
   wallet: string;
   warning: string;
 }
+
+export interface RebalanceSuggestion {
+  amount: number;
+  cappedByTestMode: boolean;
+  direction: "ethereum-to-coti" | "coti-to-ethereum" | null;
+  executable: boolean;
+  reason?: string;
+  recipient?: string;
+  sourceBalance: number;
+  sourceChain?: ChainKey;
+  targetBalance: number;
+  targetChain?: ChainKey;
+  testCap: number;
+  token: RebalanceTokenId | null;
+  tokenSymbol: "COTI" | "gCOTI" | null;
+}
+
+export interface PreparedRebalancePlan {
+  generatedAtUtc: string;
+  kind: "rebalance";
+  steps: PreparedStep[];
+  suggestion: RebalanceSuggestion;
+  wallet: string;
+  warning: string;
+}
+
+export type PreparedWalletPlan = PreparedPlan | PreparedRebalancePlan;
 
 export interface WalletProvider {
   request(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<unknown>;
