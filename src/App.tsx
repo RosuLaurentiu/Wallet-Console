@@ -18,7 +18,7 @@ interface TxProgress {
 }
 
 function stepName(index: number): string {
-  return ["Connect wallet", "Quote", "Review", "Sign"][index] || "";
+  return ["Connect", "Quote", "Review", "Sign"][index] || "";
 }
 
 function parseError(error: unknown): string {
@@ -33,6 +33,12 @@ function pairTitle(pairId: PairId): string {
   return pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC";
 }
 
+function chainLabel(chainId: number | null): string {
+  if (chainId === APP_CONFIG.ethereum.chainId) return "Ethereum";
+  if (chainId === APP_CONFIG.coti.chainId) return "COTI";
+  return chainId === null ? "n/a" : String(chainId);
+}
+
 function App() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [providerId, setProviderId] = useState("");
@@ -45,6 +51,7 @@ function App() {
   const [flow, setFlow] = useState<FlowState>("idle");
   const [message, setMessage] = useState("Connect the allowed wallet to calculate browser-signed arbitrage.");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showBalances, setShowBalances] = useState(false);
 
   const selectedProvider = useMemo(
     () => providers.find((entry) => entry.id === providerId) || providers[0] || null,
@@ -194,15 +201,17 @@ function App() {
     <main className="app">
       <header className="topbar">
         <div>
-          <div className="eyebrow">Private browser-wallet tool</div>
           <h1>COTI Arbitrage Signer</h1>
-          <p>Quotes COTI/gCOTI and COTI/USDC, then prepares DEX-only transactions for your wallet.</p>
+          <p>Quote, review, and sign DEX-only arbitrage transactions from your wallet.</p>
         </div>
-        <div className={`status ${flow}`}>{flow}</div>
+        <div className="top-status">
+          <div className={`status ${flow}`}>{flow}</div>
+          <small>{account ? `${shortAddress(account)} - ${chainLabel(chainId)}` : "wallet not connected"}</small>
+        </div>
       </header>
 
       <section className="notice">
-        <strong>Wallet gate:</strong> only {shortAddress(APP_CONFIG.allowedWallet)} can quote or sign. The page is public on GitHub Pages; your private key never leaves your wallet.
+        <strong>Wallet gate:</strong> only {shortAddress(APP_CONFIG.allowedWallet)} can quote or sign. Your private key never leaves your wallet.
         <br />
         <strong>No bridge:</strong> every prepared action is a DEX approval or swap. Uniswap signs first, then Carbon.
       </section>
@@ -216,32 +225,25 @@ function App() {
         ))}
       </section>
 
-      <section className="grid">
-        <aside className="panel wallet-panel">
-          <h2>Wallet</h2>
-          <label>
-            Provider
+      <section className="workflow">
+        <section className="panel action-strip">
+          <label className="field provider-field">
+            <span>Provider</span>
             <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
               {providers.length === 0 ? <option>No wallet detected</option> : providers.map((provider) => (
                 <option value={provider.id} key={provider.id}>{provider.label}</option>
               ))}
             </select>
           </label>
-          <div className="wallet-card">
-            <span>Address</span>
-            <strong>{account ? shortAddress(account) : "not connected"}</strong>
-          </div>
-          <div className="wallet-card">
-            <span>Network</span>
-            <strong>{chainId === null ? "n/a" : chainId}</strong>
-          </div>
+          <Info label="Wallet" value={account ? shortAddress(account) : "not connected"} />
+          <Info label="Network" value={chainLabel(chainId)} />
           {account && !allowed ? <div className="blocked">This wallet is not allowed.</div> : null}
-          <div className="button-row">
+          <div className="action-buttons">
             <button className="primary" type="button" onClick={connect}>{account ? "Change wallet" : "Connect wallet"}</button>
             <button type="button" onClick={forget} disabled={!account}>Forget</button>
+            <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Refresh quote</button>
           </div>
-          <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Refresh quote</button>
-        </aside>
+        </section>
 
         <section className="panel main-panel">
           <div className="panel-head">
@@ -263,7 +265,7 @@ function App() {
                 <button className={`opportunity ${selectedPair === pairId ? "selected" : ""} ${opportunity?.executable ? "ok" : "blocked"}`} type="button" key={pairId} onClick={() => setSelectedPair(pairId)}>
                   <span>{pairTitle(pairId)}</span>
                   <strong>{opportunity ? usdFmt(opportunity.netProfitUsd) : "not quoted"}</strong>
-                  <small>{opportunity ? `${opportunity.route} · net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Refresh quote"}</small>
+                  <small>{opportunity ? `${opportunity.route} - net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Refresh quote"}</small>
                 </button>
               );
             })}
@@ -282,6 +284,8 @@ function App() {
                 <div><span>Input</span><strong>{numberFmt(selectedOpportunity.summary.inputAmount)} {selectedOpportunity.summary.inputSymbol}</strong></div>
                 <div><span>Intermediate</span><strong>{numberFmt(selectedOpportunity.summary.bridgeOutputAmount)} {selectedOpportunity.summary.bridgeOutputSymbol}</strong></div>
                 <div><span>Output</span><strong>{numberFmt(selectedOpportunity.summary.outputAmount)} {selectedOpportunity.summary.outputSymbol}</strong></div>
+              </div>
+              <div className="fee-summary">
                 <div><span>Profit</span><strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong></div>
                 <div><span>Estimated fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
                 <div><span>Net after fees</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
@@ -324,29 +328,46 @@ function App() {
           {showAdvanced ? (
             <pre className="advanced">{JSON.stringify({ quote, prepared }, null, 2)}</pre>
           ) : null}
-        </section>
 
-        <aside className="panel balances-panel">
-          <h2>Balances</h2>
-          {quote ? (
-            <>
-              <h3>Ethereum</h3>
-              <Balance label="COTI" value={quote.balances.ethereum.tokens.coti.value} />
-              <Balance label="gCOTI" value={quote.balances.ethereum.tokens.gcoti.value} />
-              <Balance label="USDC" value={quote.balances.ethereum.tokens.usdc.value} />
-              <Balance label="ETH gas" value={quote.balances.ethereum.native.value} />
-              <h3>COTI</h3>
-              <Balance label="COTI" value={quote.balances.coti.tokens.coti.value} />
-              <Balance label="gCOTI" value={quote.balances.coti.tokens.gcoti.value} />
-              <Balance label="USDCe" value={quote.balances.coti.tokens.usdc.value} />
-              <Balance label="COTI gas" value={quote.balances.coti.native.value} />
-            </>
-          ) : (
-            <p className="muted">Balances appear after quoting.</p>
-          )}
-        </aside>
+          <section className="balances-collapse">
+            <button type="button" onClick={() => setShowBalances((value) => !value)}>
+              {showBalances ? "Hide balances" : "Show balances"}
+            </button>
+            {showBalances ? (
+              quote ? (
+                <div className="balances-grid">
+                  <div>
+                    <h3>Ethereum</h3>
+                    <Balance label="COTI" value={quote.balances.ethereum.tokens.coti.value} />
+                    <Balance label="gCOTI" value={quote.balances.ethereum.tokens.gcoti.value} />
+                    <Balance label="USDC" value={quote.balances.ethereum.tokens.usdc.value} />
+                    <Balance label="ETH gas" value={quote.balances.ethereum.native.value} />
+                  </div>
+                  <div>
+                    <h3>COTI</h3>
+                    <Balance label="COTI" value={quote.balances.coti.tokens.coti.value} />
+                    <Balance label="gCOTI" value={quote.balances.coti.tokens.gcoti.value} />
+                    <Balance label="USDCe" value={quote.balances.coti.tokens.usdc.value} />
+                    <Balance label="COTI gas" value={quote.balances.coti.native.value} />
+                  </div>
+                </div>
+              ) : (
+                <p className="muted">Balances appear after quoting.</p>
+              )
+            ) : null}
+          </section>
+        </section>
       </section>
     </main>
+  );
+}
+
+function Info({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="info-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
