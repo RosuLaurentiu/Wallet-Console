@@ -282,7 +282,7 @@ function App() {
                 <div><span>Input</span><strong>{numberFmt(selectedOpportunity.summary.inputAmount)} {selectedOpportunity.summary.inputSymbol}</strong></div>
                 <div><span>Intermediate</span><strong>{numberFmt(selectedOpportunity.summary.bridgeOutputAmount)} {selectedOpportunity.summary.bridgeOutputSymbol}</strong></div>
                 <div><span>Output</span><strong>{numberFmt(selectedOpportunity.summary.outputAmount)} {selectedOpportunity.summary.outputSymbol}</strong></div>
-                <div><span>Net profit</span><strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong></div>
+                <div><span>Profit</span><strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong></div>
               </div>
               <div className="route-note">Uniswap signs first, Carbon signs second. No bridge transaction is prepared.</div>
               {selectedOpportunity.warnings.map((warning) => <div className="warning" key={warning}>{warning}</div>)}

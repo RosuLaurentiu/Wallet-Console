@@ -257,16 +257,19 @@ function sourceInfo(state: WalletState, pairId: PairId, direction: Direction) {
     : { source: state.balances.coti.tokens.usdc, opposite: state.balances.ethereum.tokens.coti };
 }
 
-function uniqueSortedAmounts(values: number[]): number[] {
-  return Array.from(new Set(values.map((value) => Number(value.toFixed(6)))))
-    .filter((value) => value > 0)
-    .sort((a, b) => b - a);
-}
-
-function sampleAmounts(max: number, pairId: PairId): number[] {
-  const balanceBased = [1, 0.75, 0.5, 0.25, 0.1, 0.05, 0.02].map((fraction) => max * fraction);
+function candidateAmounts(max: number, pairId: PairId, steps = 80): number[] {
   const probes = pairId === "coti-usdc" ? APP_CONFIG.probeUsdcAmounts : APP_CONFIG.probeCotiAmounts;
-  return uniqueSortedAmounts([...balanceBased, ...probes]);
+  const candidateSet = new Set<number>([max, ...probes]);
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    candidateSet.add(max * t);
+    candidateSet.add(max * (t ** 2));
+    candidateSet.add(max * (t ** 4));
+  }
+  return Array.from(candidateSet)
+    .map((value) => Number(value.toFixed(6)))
+    .filter((value) => value > 0)
+    .sort((a, b) => a - b);
 }
 
 function balanceBlocker(label: string, required: number, available: number): string | null {
@@ -277,7 +280,7 @@ function balanceBlocker(label: string, required: number, available: number): str
 function firstBlocker(blockers: Array<string | null>, thresholdOk: boolean): string | undefined {
   const balanceIssue = blockers.find((item): item is string => !!item);
   if (balanceIssue) return balanceIssue;
-  return thresholdOk ? undefined : "Net profit is below threshold.";
+  return thresholdOk ? undefined : "Profit is below threshold.";
 }
 
 async function evaluateCandidate(state: WalletState, pairId: PairId, direction: Direction, amount: number, cotiUsd: number | null, ethUsd: number | null): Promise<Opportunity | null> {
@@ -340,13 +343,15 @@ function makeOpportunity(
   gasUsd: number,
   balanceBlockers: Array<string | null> = [],
 ): Opportunity {
-  const netProfitUsd = grossProfitUsd - gasUsd;
-  const thresholdOk = netProfitUsd >= APP_CONFIG.minNetProfitUsd;
+  // Keep this aligned with the ServerDashBoard !arb quote: the main opportunity
+  // number is market profit before wallet gas. Gas is shown separately in details.
+  const netProfitUsd = grossProfitUsd;
+  const thresholdOk = grossProfitUsd >= APP_CONFIG.minNetProfitUsd;
   const reason = firstBlocker(balanceBlockers, thresholdOk);
   const warnings = [
     "Uniswap executes first. If Carbon fails, the first transaction remains final.",
   ];
-  if (!thresholdOk) warnings.unshift(`Net profit is below $${APP_CONFIG.minNetProfitUsd}.`);
+  if (!thresholdOk) warnings.unshift(`Profit is below $${APP_CONFIG.minNetProfitUsd}.`);
   for (const blocker of balanceBlockers.filter((item): item is string => !!item)) warnings.unshift(blocker);
   return {
     action: direction === "buy_on_uniswap_sell_on_carbon" ? `Buy ${bridgeOutputSymbol} on Uniswap, sell on Carbon` : `Buy ${bridgeOutputSymbol} on Carbon, sell on Uniswap`,
@@ -367,7 +372,7 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
   const max = source.value;
   let best: Opportunity | null = null;
   let lastError: unknown = null;
-  for (const amount of sampleAmounts(max, pairId)) {
+  for (const amount of candidateAmounts(max, pairId)) {
     const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, ethUsd).catch((error) => {
       lastError = error;
       return null;
