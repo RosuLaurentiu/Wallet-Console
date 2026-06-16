@@ -31,6 +31,16 @@ const erc20Interface = new Interface(ERC20_ABI);
 const routerInterface = new Interface(UNISWAP_ROUTER_ABI);
 const ethProvider = new JsonRpcProvider(APP_CONFIG.ethRpcUrl);
 const cotiProvider = new JsonRpcProvider(APP_CONFIG.cotiRpcUrl);
+const GAS_UNITS = {
+  erc20Approval: 55000,
+  uniswapSwap: 180000,
+  carbonSwap: 350000,
+} as const;
+
+interface FeeRates {
+  cotiUsdPerGas: number;
+  ethUsdPerGas: number;
+}
 
 function token(provider: JsonRpcProvider, address: string): Contract {
   return new Contract(address, ERC20_ABI, provider);
@@ -211,6 +221,19 @@ async function prices(): Promise<{ cotiUsd: number | null; ethUsd: number | null
   };
 }
 
+async function feeRates(cotiUsd: number | null, ethUsd: number | null): Promise<FeeRates> {
+  const [ethFee, cotiFee] = await Promise.all([
+    ethProvider.getFeeData().catch(() => null),
+    cotiProvider.getFeeData().catch(() => null),
+  ]);
+  const ethWei = ethFee?.maxFeePerGas || ethFee?.gasPrice || 0n;
+  const cotiWei = cotiFee?.maxFeePerGas || cotiFee?.gasPrice || 0n;
+  return {
+    ethUsdPerGas: ethUsd ? Number(formatEther(ethWei)) * ethUsd : 0,
+    cotiUsdPerGas: cotiUsd ? Number(formatEther(cotiWei)) * cotiUsd : 0,
+  };
+}
+
 async function uniswapPath(pairId: PairId, direction: Direction): Promise<string[]> {
   if (pairId === "coti-gcoti") {
     return direction === "buy_on_uniswap_sell_on_carbon"
@@ -283,10 +306,36 @@ function firstBlocker(blockers: Array<string | null>, thresholdOk: boolean): str
   return thresholdOk ? undefined : "Net after estimated fees is below threshold.";
 }
 
-async function evaluateCandidate(state: WalletState, pairId: PairId, direction: Direction, amount: number, cotiUsd: number | null, ethUsd: number | null): Promise<Opportunity | null> {
+function needsApproval(allowanceState: AllowanceState, amount: number, decimals: number): boolean {
+  if (allowanceState.native) return false;
+  try {
+    return BigInt(allowanceState.raw || 0) < parseTokenAmount(amount, decimals);
+  } catch {
+    return true;
+  }
+}
+
+function estimatedNetworkFeesUsd(args: {
+  carbonAllowance?: AllowanceState;
+  carbonDecimals?: number;
+  carbonSourceAmount: number;
+  ethAllowance: AllowanceState;
+  ethDecimals: number;
+  ethSourceAmount: number;
+  fees: FeeRates;
+}): number {
+  const ethUnits = GAS_UNITS.uniswapSwap + (needsApproval(args.ethAllowance, args.ethSourceAmount, args.ethDecimals) ? GAS_UNITS.erc20Approval : 0);
+  const carbonUnits = GAS_UNITS.carbonSwap + (
+    args.carbonAllowance && args.carbonDecimals !== undefined && needsApproval(args.carbonAllowance, args.carbonSourceAmount, args.carbonDecimals)
+      ? GAS_UNITS.erc20Approval
+      : 0
+  );
+  return (ethUnits * args.fees.ethUsdPerGas) + (carbonUnits * args.fees.cotiUsdPerGas);
+}
+
+async function evaluateCandidate(state: WalletState, pairId: PairId, direction: Direction, amount: number, cotiUsd: number | null, fees: FeeRates): Promise<Opportunity | null> {
   const route = direction === "buy_on_uniswap_sell_on_carbon" ? "Uniswap -> Carbon" : "Carbon -> Uniswap";
   const path = await uniswapPath(pairId, direction);
-  const gasUsd = ethUsd ? (250000 * 20e-9 * ethUsd) + ((cotiUsd || 0) * 350000 * 1e-9) : 0;
 
   if (pairId === "coti-gcoti") {
     if (direction === "buy_on_uniswap_sell_on_carbon") {
@@ -294,6 +343,15 @@ async function evaluateCandidate(state: WalletState, pairId: PairId, direction: 
       const out = await carbonOut(state.carbon, state.carbon.gcotiAddress, state.carbon.cotiAddress, gcoti);
       const gross = out - amount;
       const grossUsd = gross * (cotiUsd || 0);
+      const gasUsd = estimatedNetworkFeesUsd({
+        carbonAllowance: state.allowances.coti.gcoti,
+        carbonDecimals: state.balances.coti.tokens.gcoti.decimals,
+        carbonSourceAmount: gcoti,
+        ethAllowance: state.allowances.ethereum.coti,
+        ethDecimals: state.balances.ethereum.tokens.coti.decimals,
+        ethSourceAmount: amount,
+        fees,
+      });
       return makeOpportunity(pairId, direction, route, amount, "COTI", gcoti, "gCOTI", out, "COTI", gross, "COTI", grossUsd, gasUsd, [
         balanceBlocker("Ethereum COTI", amount, state.balances.ethereum.tokens.coti.value),
         balanceBlocker("COTI-chain gCOTI", gcoti, state.balances.coti.tokens.gcoti.value),
@@ -303,6 +361,15 @@ async function evaluateCandidate(state: WalletState, pairId: PairId, direction: 
     const out = await uniswapOut(gcoti, state.balances.ethereum.tokens.gcoti.decimals, path);
     const gross = out - amount;
     const grossUsd = gross * (cotiUsd || 0);
+    const gasUsd = estimatedNetworkFeesUsd({
+      carbonAllowance: state.allowances.coti.coti,
+      carbonDecimals: state.balances.coti.tokens.coti.decimals,
+      carbonSourceAmount: amount,
+      ethAllowance: state.allowances.ethereum.gcoti,
+      ethDecimals: state.balances.ethereum.tokens.gcoti.decimals,
+      ethSourceAmount: gcoti,
+      fees,
+    });
     return makeOpportunity(pairId, direction, route, amount, "COTI", gcoti, "gCOTI", out, "COTI", gross, "COTI", grossUsd, gasUsd, [
       balanceBlocker("COTI-chain COTI", amount, state.balances.coti.tokens.coti.value),
       balanceBlocker("Ethereum gCOTI", gcoti, state.balances.ethereum.tokens.gcoti.value),
@@ -313,6 +380,15 @@ async function evaluateCandidate(state: WalletState, pairId: PairId, direction: 
     const coti = await uniswapOut(amount, state.balances.ethereum.tokens.usdc.decimals, path);
     const out = await carbonOut(state.carbon, state.carbon.cotiAddress, state.carbon.usdcAddress, coti);
     const gross = out - amount;
+    const gasUsd = estimatedNetworkFeesUsd({
+      carbonAllowance: state.allowances.coti.coti,
+      carbonDecimals: state.balances.coti.tokens.coti.decimals,
+      carbonSourceAmount: coti,
+      ethAllowance: state.allowances.ethereum.usdc,
+      ethDecimals: state.balances.ethereum.tokens.usdc.decimals,
+      ethSourceAmount: amount,
+      fees,
+    });
     return makeOpportunity(pairId, direction, route, amount, "USDC", coti, "COTI", out, "USDCe", gross, "USDC", gross, gasUsd, [
       balanceBlocker("Ethereum USDC", amount, state.balances.ethereum.tokens.usdc.value),
       balanceBlocker("COTI-chain COTI", coti, state.balances.coti.tokens.coti.value),
@@ -321,6 +397,15 @@ async function evaluateCandidate(state: WalletState, pairId: PairId, direction: 
   const coti = await carbonOut(state.carbon, state.carbon.usdcAddress, state.carbon.cotiAddress, amount);
   const out = await uniswapOut(coti, state.balances.ethereum.tokens.coti.decimals, path);
   const gross = out - amount;
+  const gasUsd = estimatedNetworkFeesUsd({
+    carbonAllowance: state.allowances.coti.usdc,
+    carbonDecimals: state.balances.coti.tokens.usdc.decimals,
+    carbonSourceAmount: amount,
+    ethAllowance: state.allowances.ethereum.coti,
+    ethDecimals: state.balances.ethereum.tokens.coti.decimals,
+    ethSourceAmount: coti,
+    fees,
+  });
   return makeOpportunity(pairId, direction, route, amount, "USDCe", coti, "COTI", out, "USDC", gross, "USDC", gross, gasUsd, [
     balanceBlocker("COTI-chain USDCe", amount, state.balances.coti.tokens.usdc.value),
     balanceBlocker("Ethereum COTI", coti, state.balances.ethereum.tokens.coti.value),
@@ -370,13 +455,13 @@ function makeOpportunity(
   };
 }
 
-async function bestOpportunity(state: WalletState, pairId: PairId, direction: Direction, cotiUsd: number | null, ethUsd: number | null): Promise<Opportunity | null> {
+async function bestOpportunity(state: WalletState, pairId: PairId, direction: Direction, cotiUsd: number | null, fees: FeeRates): Promise<Opportunity | null> {
   const { source } = sourceInfo(state, pairId, direction);
   const max = source.value;
   let best: Opportunity | null = null;
   let lastError: unknown = null;
   for (const amount of candidateAmounts(max, pairId)) {
-    const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, ethUsd).catch((error) => {
+    const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, fees).catch((error) => {
       lastError = error;
       return null;
     });
@@ -400,11 +485,12 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
 export async function buildQuote(walletAddress: string) {
   const state = await loadWalletState(walletAddress);
   const price = await prices();
+  const fees = await feeRates(price.cotiUsd, price.ethUsd);
   const settled = await Promise.all([
-    bestOpportunity(state, "coti-gcoti", "buy_on_uniswap_sell_on_carbon", price.cotiUsd, price.ethUsd),
-    bestOpportunity(state, "coti-gcoti", "buy_on_carbon_sell_on_uniswap", price.cotiUsd, price.ethUsd),
-    bestOpportunity(state, "coti-usdc", "buy_on_uniswap_sell_on_carbon", price.cotiUsd, price.ethUsd),
-    bestOpportunity(state, "coti-usdc", "buy_on_carbon_sell_on_uniswap", price.cotiUsd, price.ethUsd),
+    bestOpportunity(state, "coti-gcoti", "buy_on_uniswap_sell_on_carbon", price.cotiUsd, fees),
+    bestOpportunity(state, "coti-gcoti", "buy_on_carbon_sell_on_uniswap", price.cotiUsd, fees),
+    bestOpportunity(state, "coti-usdc", "buy_on_uniswap_sell_on_carbon", price.cotiUsd, fees),
+    bestOpportunity(state, "coti-usdc", "buy_on_carbon_sell_on_uniswap", price.cotiUsd, fees),
   ]);
   const byPair: Opportunity[] = (["coti-gcoti", "coti-usdc"] as PairId[]).map((pairId) => {
     const pairBest = settled.filter((item): item is Opportunity => !!item && item.pairId === pairId).sort((a, b) => {
