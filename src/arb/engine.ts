@@ -42,8 +42,47 @@ async function fetchJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function canonicalPairKey(tokenA: string, tokenB: string): string {
+  return [tokenA.toLowerCase(), tokenB.toLowerCase()].sort().join("_");
+}
+
 function normalizeSeedData(seedData: unknown): { latestBlockNumber: number; pairs: Array<{ fee?: number; pair: [string, string]; strategies: unknown[] }> } {
   const record = seedData as Record<string, unknown>;
+  if (record.strategiesByPair && typeof record.strategiesByPair === "object") {
+    const byPair = new Map<string, { fee?: number; pair: [string, string]; strategiesById: Map<string, unknown> }>();
+    for (const [pairKey, strategies] of Object.entries(record.strategiesByPair as Record<string, unknown>)) {
+      const [token0, token1] = pairKey.split("_");
+      if (!token0 || !token1) continue;
+      const canonicalKey = canonicalPairKey(token0, token1);
+      if (!byPair.has(canonicalKey)) {
+        byPair.set(canonicalKey, { pair: [token0, token1], strategiesById: new Map<string, unknown>() });
+      }
+      const entry = byPair.get(canonicalKey);
+      for (const strategy of Array.isArray(strategies) ? strategies : []) {
+        const strategyRecord = strategy as Record<string, unknown>;
+        const id = String(strategyRecord.id ?? entry?.strategiesById.size ?? "");
+        entry?.strategiesById.set(id, strategy);
+      }
+    }
+    const feeByPair = record.tradingFeePPMByPair && typeof record.tradingFeePPMByPair === "object"
+      ? record.tradingFeePPMByPair as Record<string, unknown>
+      : {};
+    for (const [pairKey, fee] of Object.entries(feeByPair)) {
+      const [token0, token1] = pairKey.split("_");
+      if (!token0 || !token1) continue;
+      const entry = byPair.get(canonicalPairKey(token0, token1));
+      if (entry && entry.fee === undefined) entry.fee = Number(fee);
+    }
+    return {
+      latestBlockNumber: Number(record.latestBlockNumber || 0),
+      pairs: Array.from(byPair.values()).map((entry) => ({
+        fee: entry.fee,
+        pair: entry.pair,
+        strategies: Array.from(entry.strategiesById.values()),
+      })),
+    };
+  }
+
   const rawPairs = Array.isArray(record.pairs)
     ? record.pairs
     : Array.isArray(record.data)
@@ -327,8 +366,12 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
   const { source } = sourceInfo(state, pairId, direction);
   const max = source.value;
   let best: Opportunity | null = null;
+  let lastError: unknown = null;
   for (const amount of sampleAmounts(max, pairId)) {
-    const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, ethUsd).catch(() => null);
+    const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, ethUsd).catch((error) => {
+      lastError = error;
+      return null;
+    });
     if (!candidate) continue;
     if (!best) {
       best = candidate;
@@ -339,6 +382,9 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
       continue;
     }
     if (candidate.netProfitUsd > best.netProfitUsd) best = candidate;
+  }
+  if (!best && lastError) {
+    console.warn(`Quote failed for ${pairId} ${direction}:`, lastError);
   }
   return best;
 }
