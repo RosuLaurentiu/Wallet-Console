@@ -1,29 +1,35 @@
-# Private Vault Web App
+# COTI Arbitrage Signer
 
-Frontend for your COTI contracts:
+Private browser-wallet tool for manually signing COTI arbitrage transactions.
 
-- `PrivateUSDCe`
-- `PrivateCOTI`
-- `USDCePrivateVault`
-- `COTIPrivateVault`
+The app is static and deploys to GitHub Pages. It does not use a VPS API, does not receive private keys, and does not sign anything itself. The connected wallet signs every transaction through `eth_sendTransaction`.
 
-## Features
+## What It Does
 
-- Wallet connect (injected provider / MetaMask)
-- COTI Mainnet switch helper
-- Contracts are pre-integrated (no manual address input)
-- USDC.e flow:
-  - `approve`
-  - `toPrivate(amount)` with vault fee in COTI
-  - `toPublic(amount)` with vault fee in COTI
-- COTI flow:
-  - `toPrivate(amount)` with `{ value: amount + fee }`
-  - `toPublic(amount)` with `{ value: fee }`
-- Live snapshot:
-  - wallet balances
-  - vault reserves
-  - allowances
-  - private token total supplies
+- Connects MetaMask or CipherTrade/CypherTrade injected wallets.
+- Allows only wallet `0x5DFcEe20b5a3FDd3577436A32f62d4C0b39e979d`.
+- Quotes both:
+  - `COTI/gCOTI`
+  - `COTI/USDC`
+- Caps opportunities by balances already present on Ethereum and COTI.
+- Prepares DEX-only transaction steps:
+  - Uniswap approval if needed
+  - Uniswap swap
+  - Carbon approval if needed
+  - Carbon swap
+- Never prepares bridge transactions.
+
+## Security Notes
+
+GitHub Pages makes the page publicly reachable if someone knows the URL. The wallet gate blocks use by other wallets, but this is not true private hosting. Use Cloudflare Access or another authenticated host later if the page itself must be private.
+
+The app validates prepared transactions before signing:
+
+- Ethereum swaps must target the configured Uniswap V2 router.
+- Ethereum approvals must approve only the Uniswap router.
+- COTI swaps must target the configured Carbon controller.
+- COTI approvals must approve only the Carbon controller.
+- Direct transfers, unknown tokens, unknown spenders, and unexpected native value are rejected.
 
 ## Run
 
@@ -32,21 +38,20 @@ npm install
 npm run dev
 ```
 
-## Build
+## Checks
 
 ```bash
+npm run lint
+npm test
 npm run build
-npm run preview
 ```
 
 ## GitHub Pages
 
-- Deploy is automated via `.github/workflows/deploy-pages.yml`.
-- Every push to `main` builds and publishes `dist` to GitHub Pages.
-- Expected URL: `https://rosulaurentiu.github.io/private-vault-app/`
+Deploy is automated by `.github/workflows/deploy-pages.yml`.
 
-## Notes
+Expected URL:
 
-- COTI conversion requires amounts in steps of `0.000001` COTI (`1e12` wei), matching your vault contract constraints.
-- Vault fees are read directly from each deployed vault (`swapFeeWei`) and paid automatically by the UI.
-- Contract addresses are hardcoded in `src/App.tsx` under `DEPLOYED`.
+```text
+https://rosulaurentiu.github.io/private-vault-app/
+```
