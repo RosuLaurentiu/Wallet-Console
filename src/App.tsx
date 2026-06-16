@@ -49,7 +49,7 @@ function App() {
   const [prepared, setPrepared] = useState<PreparedPlan | null>(null);
   const [progress, setProgress] = useState<TxProgress[]>([]);
   const [flow, setFlow] = useState<FlowState>("idle");
-  const [message, setMessage] = useState("Connect the allowed wallet to calculate browser-signed arbitrage.");
+  const [message, setMessage] = useState("Connect wallet.");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showBalances, setShowBalances] = useState(false);
 
@@ -70,12 +70,12 @@ function App() {
   const connect = useCallback(async () => {
     if (!selectedProvider) {
       setFlow("error");
-      setMessage("No supported wallet provider detected. Open this page inside MetaMask or CipherTrade.");
+      setMessage("No wallet detected.");
       return;
     }
     try {
       setFlow("loading");
-      setMessage("Requesting wallet connection...");
+      setMessage("Connecting...");
       const result = await connectProvider(selectedProvider);
       setAccount(result.address);
       setChainId(result.chainId);
@@ -84,11 +84,11 @@ function App() {
       setProgress([]);
       if (!isAllowedWallet(result.address)) {
         setFlow("error");
-        setMessage(`Wallet ${shortAddress(result.address)} is not allowed to use this tool.`);
+        setMessage(`${shortAddress(result.address)} not allowed.`);
         return;
       }
       setFlow("ready");
-      setMessage("Wallet connected. Refresh quotes when ready.");
+      setMessage("Ready.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
@@ -102,25 +102,25 @@ function App() {
     setPrepared(null);
     setProgress([]);
     setFlow("idle");
-    setMessage("Wallet forgotten locally. Browser wallet permissions were not changed.");
+    setMessage("Wallet forgotten.");
   }, []);
 
   const refreshQuote = useCallback(async () => {
     if (!account || !allowed) {
-      setMessage("Connect the allowed wallet first.");
+      setMessage("Connect wallet first.");
       return;
     }
     try {
       setFlow("loading");
       setPrepared(null);
       setProgress([]);
-      setMessage("Calculating both arbitrage pairs from public RPC data...");
+      setMessage("Quoting...");
       const result = await buildQuote(account);
       setQuote(result);
       const best = result.opportunities.slice().sort((a, b) => b.netProfitAfterFeesUsd - a.netProfitAfterFeesUsd)[0];
       if (best) setSelectedPair(best.pairId);
       setFlow("ready");
-      setMessage("Quote refreshed.");
+      setMessage("Quote updated.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
@@ -135,7 +135,7 @@ function App() {
     try {
       setFlow("loading");
       setProgress([]);
-      setMessage("Preparing unsigned DEX-only wallet transactions...");
+      setMessage("Preparing txs...");
       const plan = await preparePlan(account, selectedPair);
       setPrepared(plan);
       setProgress(plan.steps.map((step) => ({
@@ -146,7 +146,7 @@ function App() {
         status: "waiting",
       })));
       setFlow("ready");
-      setMessage("Review complete. Start signatures only if the route and amounts look correct.");
+      setMessage("Review prepared.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
@@ -157,7 +157,7 @@ function App() {
     if (!selectedProvider || !prepared) return;
     try {
       setFlow("signing");
-      setMessage("Wallet signature flow started. Do not change accounts until all steps finish.");
+      setMessage("Signing...");
       const current = await currentAccount(selectedProvider);
       if (!current || current.toLowerCase() !== prepared.wallet.toLowerCase()) {
         throw new Error("Wallet account changed before signing.");
@@ -187,7 +187,7 @@ function App() {
         setProgress((items) => items.map((item) => item.index === step.index ? { ...item, hash, message: "Submitted", status: "success" } : item));
       }
       setFlow("success");
-      setMessage("All prepared transactions were submitted. Refresh quotes before trading again.");
+      setMessage("Submitted. Refresh before trading again.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
@@ -201,20 +201,13 @@ function App() {
     <main className="app">
       <header className="topbar">
         <div>
-          <h1>COTI Arbitrage Signer</h1>
-          <p>Quote, review, and sign DEX-only arbitrage transactions from your wallet.</p>
+          <h1>COTI Arb</h1>
         </div>
         <div className="top-status">
           <div className={`status ${flow}`}>{flow}</div>
           <small>{account ? `${shortAddress(account)} - ${chainLabel(chainId)}` : "wallet not connected"}</small>
         </div>
       </header>
-
-      <section className="notice">
-        <strong>Wallet gate:</strong> only {shortAddress(APP_CONFIG.allowedWallet)} can quote or sign. Your private key never leaves your wallet.
-        <br />
-        <strong>No bridge:</strong> every prepared action is a DEX approval or swap. Uniswap signs first, then Carbon.
-      </section>
 
       <section className="steps">
         {[0, 1, 2, 3].map((step) => (
@@ -239,9 +232,9 @@ function App() {
           <Info label="Network" value={chainLabel(chainId)} />
           {account && !allowed ? <div className="blocked">This wallet is not allowed.</div> : null}
           <div className="action-buttons">
-            <button className="primary" type="button" onClick={connect}>{account ? "Change wallet" : "Connect wallet"}</button>
+            <button className="primary" type="button" onClick={connect}>{account ? "Change" : "Connect"}</button>
             <button type="button" onClick={forget} disabled={!account}>Forget</button>
-            <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Refresh quote</button>
+            <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Quote</button>
           </div>
         </section>
 
@@ -265,7 +258,7 @@ function App() {
                 <button className={`opportunity ${selectedPair === pairId ? "selected" : ""} ${opportunity?.executable ? "ok" : "blocked"}`} type="button" key={pairId} onClick={() => setSelectedPair(pairId)}>
                   <span>{pairTitle(pairId)}</span>
                   <strong>{opportunity ? usdFmt(opportunity.netProfitUsd) : "not quoted"}</strong>
-                  <small>{opportunity ? `${opportunity.route} - net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Refresh quote"}</small>
+                  <small>{opportunity ? `${opportunity.route} - net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Quote"}</small>
                 </button>
               );
             })}
@@ -290,15 +283,15 @@ function App() {
                 <div><span>Estimated fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
                 <div><span>Net after fees</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
               </div>
-              <div className="route-note">Uniswap signs first, Carbon signs second. No bridge transaction is prepared.</div>
-              {selectedOpportunity.warnings.map((warning) => <div className="warning" key={warning}>{warning}</div>)}
+              <div className="route-note">Uniswap first. Carbon second. No bridge.</div>
+              {selectedOpportunity.reason ? <div className="warning">{selectedOpportunity.reason}</div> : null}
               <div className="button-row">
-                <button className="primary" type="button" onClick={review} disabled={!selectedOpportunity.executable || flow === "loading" || flow === "signing"}>Review transactions</button>
-                <button type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide details" : "Advanced details"}</button>
+                <button className="primary" type="button" onClick={review} disabled={!selectedOpportunity.executable || flow === "loading" || flow === "signing"}>Review</button>
+                <button type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide details" : "Details"}</button>
               </div>
             </div>
           ) : (
-            <div className="empty">Connect wallet and refresh quotes.</div>
+            <div className="empty">Connect wallet and quote.</div>
           )}
 
           {prepared ? (
