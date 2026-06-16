@@ -14,6 +14,7 @@ import type {
   PreparedPlan,
   PreparedRebalancePlan,
   PreparedStep,
+  RebalanceSummary,
   RebalanceSuggestion,
   RebalanceTokenId,
   TokenBalance,
@@ -290,17 +291,14 @@ function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): Reba
   const ethBalance = state.balances.ethereum.tokens[tokenId].value;
   const cotiBalance = state.balances.coti.tokens[tokenId].value;
   const total = ethBalance + cotiBalance;
-  const testCap = APP_CONFIG.rebalanceTestCaps[tokenId];
   if (total <= 0) {
     return {
       amount: 0,
-      cappedByTestMode: false,
       direction: null,
       executable: false,
       reason: `No ${tokenSymbol} balance found.`,
       sourceBalance: 0,
       targetBalance: 0,
-      testCap,
       token: tokenId,
       tokenSymbol,
     };
@@ -312,13 +310,11 @@ function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): Reba
   if (needed < dust) {
     return {
       amount: 0,
-      cappedByTestMode: false,
       direction: null,
       executable: false,
       reason: `${tokenSymbol} is already close to 50/50.`,
       sourceBalance: difference > 0 ? ethBalance : cotiBalance,
       targetBalance: difference > 0 ? cotiBalance : ethBalance,
-      testCap,
       token: tokenId,
       tokenSymbol,
     };
@@ -328,10 +324,9 @@ function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): Reba
   const targetChain = difference > 0 ? "coti" : "ethereum";
   const sourceBalance = sourceChain === "ethereum" ? ethBalance : cotiBalance;
   const targetBalance = sourceChain === "ethereum" ? cotiBalance : ethBalance;
-  const amount = Math.min(needed, sourceBalance, testCap);
+  const amount = Math.min(needed, sourceBalance);
   return {
     amount,
-    cappedByTestMode: amount < needed,
     direction: sourceChain === "ethereum" ? "ethereum-to-coti" : "coti-to-ethereum",
     executable: amount > 0,
     recipient: sourceChain === "ethereum" ? APP_CONFIG.bridge.ethereumRecipient : APP_CONFIG.bridge.cotiRecipient,
@@ -339,34 +334,25 @@ function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): Reba
     sourceChain,
     targetBalance,
     targetChain,
-    testCap,
     token: tokenId,
     tokenSymbol,
   };
 }
 
-function buildRebalanceSuggestion(state: WalletState): RebalanceSuggestion {
+function buildRebalanceSummary(state: WalletState): RebalanceSummary {
   const candidates = (["coti", "gcoti"] as RebalanceTokenId[]).map((tokenId) => rebalanceCandidate(state, tokenId));
   const executable = candidates.filter((candidate) => candidate.executable);
   if (!executable.length) {
     return {
-      amount: 0,
-      cappedByTestMode: false,
-      direction: null,
       executable: false,
       reason: candidates.map((candidate) => candidate.reason).filter(Boolean).join(" "),
-      sourceBalance: 0,
-      targetBalance: 0,
-      testCap: 0,
-      token: null,
-      tokenSymbol: null,
+      suggestions: candidates,
     };
   }
-  return executable.sort((a, b) => {
-    const aRelative = Math.abs(a.sourceBalance - a.targetBalance) / Math.max(a.sourceBalance + a.targetBalance, 1);
-    const bRelative = Math.abs(b.sourceBalance - b.targetBalance) / Math.max(b.sourceBalance + b.targetBalance, 1);
-    return bRelative - aRelative;
-  })[0];
+  return {
+    executable: true,
+    suggestions: candidates,
+  };
 }
 
 function candidateAmounts(max: number, pairId: PairId, steps = 80): number[] {
@@ -608,7 +594,7 @@ export async function buildQuote(walletAddress: string) {
     allowances: state.allowances,
     opportunities: byPair,
     prices: price,
-    rebalance: buildRebalanceSuggestion(state),
+    rebalance: buildRebalanceSummary(state),
   };
 }
 
@@ -652,18 +638,19 @@ async function buildRebalanceStep(state: WalletState, suggestion: RebalanceSugge
 
 export async function prepareRebalancePlan(walletAddress: string): Promise<PreparedRebalancePlan> {
   const state = await loadWalletState(walletAddress);
-  const suggestion = buildRebalanceSuggestion(state);
-  const step = await buildRebalanceStep(state, suggestion);
-  assertAllowedRebalancePlan([step], state.carbon.gcotiAddress);
+  const rebalance = buildRebalanceSummary(state);
+  const suggestions = rebalance.suggestions.filter((suggestion) => suggestion.executable);
+  if (!suggestions.length) throw new Error(rebalance.reason || "No rebalance action is available.");
+  const steps = await Promise.all(suggestions.map((suggestion) => buildRebalanceStep(state, suggestion)));
+  const indexedSteps = steps.map((step, index) => ({ ...step, index: index + 1 }));
+  assertAllowedRebalancePlan(indexedSteps, state.carbon.gcotiAddress);
   return {
     generatedAtUtc: new Date().toISOString(),
     kind: "rebalance",
-    steps: [step],
-    suggestion,
+    steps: indexedSteps,
+    suggestions,
     wallet: state.owner,
-    warning: suggestion.cappedByTestMode
-      ? `Test mode: this bridge is capped to ${suggestion.testCap} ${suggestion.tokenSymbol}.`
-      : "Bridge transfer prepared. Wait for completion before rebalancing again.",
+    warning: "Bridge transfers prepared. Wait for completion before rebalancing again.",
   };
 }
 

@@ -94,7 +94,7 @@ export interface QuoteResult {
   allowances: WalletAllowances;
   opportunities: Opportunity[];
   prices: { cotiUsd: number | null; ethUsd: number | null };
-  rebalance: RebalanceSuggestion;
+  rebalance: RebalanceSummary;
 }
 
 export interface PreparedStep {
@@ -119,7 +119,6 @@ export interface PreparedPlan {
 
 export interface RebalanceSuggestion {
   amount: number;
-  cappedByTestMode: boolean;
   direction: "ethereum-to-coti" | "coti-to-ethereum" | null;
   executable: boolean;
   reason?: string;
@@ -128,16 +127,21 @@ export interface RebalanceSuggestion {
   sourceChain?: ChainKey;
   targetBalance: number;
   targetChain?: ChainKey;
-  testCap: number;
   token: RebalanceTokenId | null;
   tokenSymbol: "COTI" | "gCOTI" | null;
+}
+
+export interface RebalanceSummary {
+  executable: boolean;
+  reason?: string;
+  suggestions: RebalanceSuggestion[];
 }
 
 export interface PreparedRebalancePlan {
   generatedAtUtc: string;
   kind: "rebalance";
   steps: PreparedStep[];
-  suggestion: RebalanceSuggestion;
+  suggestions: RebalanceSuggestion[];
   wallet: string;
   warning: string;
 }

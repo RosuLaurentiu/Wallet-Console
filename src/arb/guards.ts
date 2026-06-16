@@ -106,6 +106,6 @@ export function assertAllowedRebalanceStep(step: PreparedStep, carbonGcotiAddres
 }
 
 export function assertAllowedRebalancePlan(steps: PreparedStep[], carbonGcotiAddress: string): void {
-  if (steps.length !== 1) throw new Error("Rebalance plan must contain exactly one bridge transfer.");
-  assertAllowedRebalanceStep(steps[0], carbonGcotiAddress);
+  if (steps.length < 1 || steps.length > 2) throw new Error("Rebalance plan must contain one or two bridge transfers.");
+  for (const step of steps) assertAllowedRebalanceStep(step, carbonGcotiAddress);
 }

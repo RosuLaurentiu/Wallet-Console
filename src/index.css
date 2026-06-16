@@ -424,6 +424,11 @@ small {
   font-size: 0.74rem;
 }
 
+.rebalance-details.muted-row {
+  background: rgba(255, 255, 255, 0.02);
+  opacity: 0.72;
+}
+
 .numbers,
 .fee-summary,
 .balances-grid {

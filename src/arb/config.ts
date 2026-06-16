@@ -18,10 +18,6 @@ export const APP_CONFIG = {
   probeUsdcAmounts: String(import.meta.env.VITE_ARB_PROBE_USDC_AMOUNTS || "25,50,100,250").split(",").map(Number).filter((value) => value > 0),
   deadlineSec: Number(import.meta.env.VITE_ARB_DEADLINE_SEC || 120),
   gasLimitBufferBps: Number(import.meta.env.VITE_ARB_GAS_LIMIT_BUFFER_BPS || 5000),
-  rebalanceTestCaps: {
-    coti: Number(import.meta.env.VITE_REBALANCE_TEST_COTI_AMOUNT || 25),
-    gcoti: Number(import.meta.env.VITE_REBALANCE_TEST_GCOTI_AMOUNT || 100),
-  },
   bridge: {
     ethereumRecipient: getAddress("0x439D73635B9590E9d9e2CC9eCAB832B057d2E25B"),
     cotiRecipient: getAddress("0x61bf10a1a27b2d99de0a59a06200a62ed579d685"),

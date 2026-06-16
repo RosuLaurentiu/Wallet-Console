@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { APP_CONFIG } from "./arb/config";
 import { buildQuote, preparePlan, prepareRebalancePlan } from "./arb/engine";
-import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSuggestion } from "./arb/types";
+import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSummary } from "./arb/types";
 import { connectProvider, currentAccount, discoverProviders, switchChain, type ProviderEntry } from "./arb/wallet";
 import { explorerTx, isAllowedWallet, numberFmt, shortAddress, usdFmt } from "./arb/utils";
 import "./index.css";
@@ -33,10 +33,10 @@ function pairTitle(pairId: PairId): string {
   return pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC";
 }
 
-function rebalanceText(rebalance: RebalanceSuggestion | null): string {
+function rebalanceText(rebalance: RebalanceSummary | null): string {
   if (!rebalance) return "Quote first.";
   if (!rebalance.executable) return rebalance.reason || "No rebalance needed.";
-  return `Bridge ${numberFmt(rebalance.amount)} ${rebalance.tokenSymbol}.`;
+  return `Bridge ${rebalance.suggestions.filter((item) => item.executable).length} token${rebalance.suggestions.filter((item) => item.executable).length === 1 ? "" : "s"}.`;
 }
 
 function chainLabel(chainId: number | null): string {
@@ -335,13 +335,13 @@ function App() {
               </div>
               {rebalance ? <span className={rebalance.executable ? "pill ok" : "pill blocked"}>{rebalance.executable ? "ready" : "blocked"}</span> : null}
             </div>
-            {rebalance?.executable ? (
-              <div className="rebalance-details">
-                <span>{rebalance.sourceChain} -&gt; {rebalance.targetChain}</span>
-                <strong>{numberFmt(rebalance.amount)} {rebalance.tokenSymbol}</strong>
-                <small>{rebalance.cappedByTestMode ? `test cap ${numberFmt(rebalance.testCap)} ${rebalance.tokenSymbol}` : "full 50/50 amount"}</small>
+            {rebalance?.suggestions.map((suggestion) => (
+              <div className={`rebalance-details ${suggestion.executable ? "" : "muted-row"}`} key={suggestion.token || suggestion.tokenSymbol || suggestion.reason}>
+                <span>{suggestion.executable ? `${suggestion.sourceChain} -> ${suggestion.targetChain}` : suggestion.reason}</span>
+                <strong>{suggestion.executable ? `${numberFmt(suggestion.amount)} ${suggestion.tokenSymbol}` : suggestion.tokenSymbol}</strong>
+                <small>{suggestion.executable ? "50/50 amount" : "no action"}</small>
               </div>
-            ) : null}
+            ))}
             <div className="button-row">
               <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !rebalance?.executable || flow === "loading" || flow === "signing"}>Rebalance</button>
               <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Refresh</button>

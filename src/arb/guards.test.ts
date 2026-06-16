@@ -81,6 +81,7 @@ describe("transaction guards", () => {
   });
 
   it("allows only official bridge recipients for rebalance transfers", () => {
+    const carbonGcoti = "0x7637C7838EC4Ec6b85080F28A678F8E234bB83D1";
     const ethBridge = step({
       chain: "ethereum",
       tx: {
@@ -91,7 +92,17 @@ describe("transaction guards", () => {
       },
       type: "bridge-transfer",
     });
-    expect(() => assertAllowedRebalancePlan([ethBridge], "0x7637C7838EC4Ec6b85080F28A678F8E234bB83D1")).not.toThrow();
+    const cotiBridge = step({
+      chain: "coti",
+      tx: {
+        data: erc20.encodeFunctionData("transfer", [APP_CONFIG.bridge.cotiRecipient, 100n]),
+        from: APP_CONFIG.allowedWallet,
+        to: carbonGcoti,
+        value: "0x0",
+      },
+      type: "bridge-transfer",
+    });
+    expect(() => assertAllowedRebalancePlan([ethBridge, cotiBridge], carbonGcoti)).not.toThrow();
     expect(() => assertAllowedPlan([ethBridge], carbonTokens)).toThrow(/Bridge transfers/i);
 
     const badRecipient = step({
@@ -104,6 +115,6 @@ describe("transaction guards", () => {
       },
       type: "bridge-transfer",
     });
-    expect(() => assertAllowedRebalancePlan([badRecipient], "0x7637C7838EC4Ec6b85080F28A678F8E234bB83D1")).toThrow(/official bridge/i);
+    expect(() => assertAllowedRebalancePlan([badRecipient], carbonGcoti)).toThrow(/official bridge/i);
   });
 });
