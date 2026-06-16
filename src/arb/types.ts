@@ -64,7 +64,9 @@ export interface Opportunity {
   action: string;
   direction: Direction;
   executable: boolean;
+  estimatedFeesUsd: number;
   netProfitUsd: number;
+  netProfitAfterFeesUsd: number;
   pairId: PairId;
   pairLabel: string;
   reason?: string;

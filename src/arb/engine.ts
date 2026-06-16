@@ -280,7 +280,7 @@ function balanceBlocker(label: string, required: number, available: number): str
 function firstBlocker(blockers: Array<string | null>, thresholdOk: boolean): string | undefined {
   const balanceIssue = blockers.find((item): item is string => !!item);
   if (balanceIssue) return balanceIssue;
-  return thresholdOk ? undefined : "Profit is below threshold.";
+  return thresholdOk ? undefined : "Net after estimated fees is below threshold.";
 }
 
 async function evaluateCandidate(state: WalletState, pairId: PairId, direction: Direction, amount: number, cotiUsd: number | null, ethUsd: number | null): Promise<Opportunity | null> {
@@ -346,18 +346,21 @@ function makeOpportunity(
   // Keep this aligned with the ServerDashBoard !arb quote: the main opportunity
   // number is market profit before wallet gas. Gas is shown separately in details.
   const netProfitUsd = grossProfitUsd;
-  const thresholdOk = grossProfitUsd >= APP_CONFIG.minNetProfitUsd;
+  const netProfitAfterFeesUsd = grossProfitUsd - gasUsd;
+  const thresholdOk = netProfitAfterFeesUsd >= APP_CONFIG.minNetProfitUsd;
   const reason = firstBlocker(balanceBlockers, thresholdOk);
   const warnings = [
     "Uniswap executes first. If Carbon fails, the first transaction remains final.",
   ];
-  if (!thresholdOk) warnings.unshift(`Profit is below $${APP_CONFIG.minNetProfitUsd}.`);
+  if (!thresholdOk) warnings.unshift(`Net after estimated fees is below $${APP_CONFIG.minNetProfitUsd}.`);
   for (const blocker of balanceBlockers.filter((item): item is string => !!item)) warnings.unshift(blocker);
   return {
     action: direction === "buy_on_uniswap_sell_on_carbon" ? `Buy ${bridgeOutputSymbol} on Uniswap, sell on Carbon` : `Buy ${bridgeOutputSymbol} on Carbon, sell on Uniswap`,
     direction,
     executable: !reason && inputAmount > 0 && outputAmount > 0,
+    estimatedFeesUsd: gasUsd,
     netProfitUsd,
+    netProfitAfterFeesUsd,
     pairId,
     pairLabel: pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC",
     reason,
@@ -411,8 +414,10 @@ export async function buildQuote(walletAddress: string) {
     return pairBest || {
       action: "No quote",
       direction: "buy_on_uniswap_sell_on_carbon",
+      estimatedFeesUsd: 0,
       executable: false,
       netProfitUsd: 0,
+      netProfitAfterFeesUsd: 0,
       pairId,
       pairLabel: pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC",
       reason: "No executable route found for current balances.",

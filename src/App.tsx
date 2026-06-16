@@ -110,7 +110,7 @@ function App() {
       setMessage("Calculating both arbitrage pairs from public RPC data...");
       const result = await buildQuote(account);
       setQuote(result);
-      const best = result.opportunities.slice().sort((a, b) => b.netProfitUsd - a.netProfitUsd)[0];
+      const best = result.opportunities.slice().sort((a, b) => b.netProfitAfterFeesUsd - a.netProfitAfterFeesUsd)[0];
       if (best) setSelectedPair(best.pairId);
       setFlow("ready");
       setMessage("Quote refreshed.");
@@ -263,7 +263,7 @@ function App() {
                 <button className={`opportunity ${selectedPair === pairId ? "selected" : ""} ${opportunity?.executable ? "ok" : "blocked"}`} type="button" key={pairId} onClick={() => setSelectedPair(pairId)}>
                   <span>{pairTitle(pairId)}</span>
                   <strong>{opportunity ? usdFmt(opportunity.netProfitUsd) : "not quoted"}</strong>
-                  <small>{opportunity ? opportunity.route : "Refresh quote"}</small>
+                  <small>{opportunity ? `${opportunity.route} · net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Refresh quote"}</small>
                 </button>
               );
             })}
@@ -283,6 +283,8 @@ function App() {
                 <div><span>Intermediate</span><strong>{numberFmt(selectedOpportunity.summary.bridgeOutputAmount)} {selectedOpportunity.summary.bridgeOutputSymbol}</strong></div>
                 <div><span>Output</span><strong>{numberFmt(selectedOpportunity.summary.outputAmount)} {selectedOpportunity.summary.outputSymbol}</strong></div>
                 <div><span>Profit</span><strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong></div>
+                <div><span>Estimated fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
+                <div><span>Net after fees</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
               </div>
               <div className="route-note">Uniswap signs first, Carbon signs second. No bridge transaction is prepared.</div>
               {selectedOpportunity.warnings.map((warning) => <div className="warning" key={warning}>{warning}</div>)}
