@@ -1,5 +1,5 @@
 {
-  "name": "privatevault",
+  "name": "coti-arb-signer",
   "private": true,
   "version": "0.0.0",
   "type": "module",

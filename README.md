@@ -1,6 +1,6 @@
-# COTI Arbitrage Signer
+# COTI Arb Signer
 
-Private browser-wallet tool for manually signing COTI arbitrage transactions.
+Private browser-wallet tool for manually signing COTI arbitrage and small test rebalance transactions.
 
 The app is static and deploys to GitHub Pages. It does not use a VPS API, does not receive private keys, and does not sign anything itself. The connected wallet signs every transaction through `eth_sendTransaction`.
 
@@ -17,7 +17,11 @@ The app is static and deploys to GitHub Pages. It does not use a VPS API, does n
   - Uniswap swap
   - Carbon approval if needed
   - Carbon swap
-- Never prepares bridge transactions.
+- Keeps arb execution separate from bridging.
+- Has a `Rebalance 50/50` test action for COTI/gCOTI only:
+  - suggests one bridge direction from current balances
+  - caps first tests to `25 COTI` or `100 gCOTI`
+  - prepares exactly one transfer to the official COTI bridge recipient
 
 ## Security Notes
 
@@ -30,6 +34,13 @@ The app validates prepared transactions before signing:
 - COTI swaps must target the configured Carbon controller.
 - COTI approvals must approve only the Carbon controller.
 - Direct transfers, unknown tokens, unknown spenders, and unexpected native value are rejected.
+
+Rebalance has a separate guard:
+
+- Arb trade plans reject bridge transfers.
+- Rebalance plans can contain exactly one bridge transfer.
+- Bridge transfers can target only official COTI bridge recipients.
+- Rebalance supports only COTI/gCOTI for now.
 
 ## Run
 
@@ -55,3 +66,5 @@ Expected URL:
 ```text
 https://rosulaurentiu.github.io/private-vault-app/
 ```
+
+The GitHub repository and Pages path are still `private-vault-app` for deployment compatibility, even though the local app folder/project name is now `COTIArbSigner`.
