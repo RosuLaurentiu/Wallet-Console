@@ -218,8 +218,27 @@ function sourceInfo(state: WalletState, pairId: PairId, direction: Direction) {
     : { source: state.balances.coti.tokens.usdc, opposite: state.balances.ethereum.tokens.coti };
 }
 
-function sampleAmounts(max: number): number[] {
-  return [1, 0.75, 0.5, 0.25, 0.1, 0.05, 0.02].map((fraction) => max * fraction).filter((value) => value > 0);
+function uniqueSortedAmounts(values: number[]): number[] {
+  return Array.from(new Set(values.map((value) => Number(value.toFixed(6)))))
+    .filter((value) => value > 0)
+    .sort((a, b) => b - a);
+}
+
+function sampleAmounts(max: number, pairId: PairId): number[] {
+  const balanceBased = [1, 0.75, 0.5, 0.25, 0.1, 0.05, 0.02].map((fraction) => max * fraction);
+  const probes = pairId === "coti-usdc" ? APP_CONFIG.probeUsdcAmounts : APP_CONFIG.probeCotiAmounts;
+  return uniqueSortedAmounts([...balanceBased, ...probes]);
+}
+
+function balanceBlocker(label: string, required: number, available: number): string | null {
+  if (required <= available) return null;
+  return `Insufficient ${label}: need ${required.toFixed(4)}, available ${available.toFixed(4)}.`;
+}
+
+function firstBlocker(blockers: Array<string | null>, thresholdOk: boolean): string | undefined {
+  const balanceIssue = blockers.find((item): item is string => !!item);
+  if (balanceIssue) return balanceIssue;
+  return thresholdOk ? undefined : "Net profit is below threshold.";
 }
 
 async function evaluateCandidate(state: WalletState, pairId: PairId, direction: Direction, amount: number, cotiUsd: number | null, ethUsd: number | null): Promise<Opportunity | null> {
@@ -230,32 +249,40 @@ async function evaluateCandidate(state: WalletState, pairId: PairId, direction: 
   if (pairId === "coti-gcoti") {
     if (direction === "buy_on_uniswap_sell_on_carbon") {
       const gcoti = await uniswapOut(amount, state.balances.ethereum.tokens.coti.decimals, path);
-      if (gcoti > state.balances.coti.tokens.gcoti.value) return null;
       const out = await carbonOut(state.carbon, state.carbon.gcotiAddress, state.carbon.cotiAddress, gcoti);
       const gross = out - amount;
       const grossUsd = gross * (cotiUsd || 0);
-      return makeOpportunity(pairId, direction, route, amount, "COTI", gcoti, "gCOTI", out, "COTI", gross, "COTI", grossUsd, gasUsd);
+      return makeOpportunity(pairId, direction, route, amount, "COTI", gcoti, "gCOTI", out, "COTI", gross, "COTI", grossUsd, gasUsd, [
+        balanceBlocker("Ethereum COTI", amount, state.balances.ethereum.tokens.coti.value),
+        balanceBlocker("COTI-chain gCOTI", gcoti, state.balances.coti.tokens.gcoti.value),
+      ]);
     }
     const gcoti = await carbonOut(state.carbon, state.carbon.cotiAddress, state.carbon.gcotiAddress, amount);
-    if (gcoti > state.balances.ethereum.tokens.gcoti.value) return null;
     const out = await uniswapOut(gcoti, state.balances.ethereum.tokens.gcoti.decimals, path);
     const gross = out - amount;
     const grossUsd = gross * (cotiUsd || 0);
-    return makeOpportunity(pairId, direction, route, amount, "COTI", gcoti, "gCOTI", out, "COTI", gross, "COTI", grossUsd, gasUsd);
+    return makeOpportunity(pairId, direction, route, amount, "COTI", gcoti, "gCOTI", out, "COTI", gross, "COTI", grossUsd, gasUsd, [
+      balanceBlocker("COTI-chain COTI", amount, state.balances.coti.tokens.coti.value),
+      balanceBlocker("Ethereum gCOTI", gcoti, state.balances.ethereum.tokens.gcoti.value),
+    ]);
   }
 
   if (direction === "buy_on_uniswap_sell_on_carbon") {
     const coti = await uniswapOut(amount, state.balances.ethereum.tokens.usdc.decimals, path);
-    if (coti > state.balances.coti.tokens.coti.value) return null;
     const out = await carbonOut(state.carbon, state.carbon.cotiAddress, state.carbon.usdcAddress, coti);
     const gross = out - amount;
-    return makeOpportunity(pairId, direction, route, amount, "USDC", coti, "COTI", out, "USDCe", gross, "USDC", gross, gasUsd);
+    return makeOpportunity(pairId, direction, route, amount, "USDC", coti, "COTI", out, "USDCe", gross, "USDC", gross, gasUsd, [
+      balanceBlocker("Ethereum USDC", amount, state.balances.ethereum.tokens.usdc.value),
+      balanceBlocker("COTI-chain COTI", coti, state.balances.coti.tokens.coti.value),
+    ]);
   }
   const coti = await carbonOut(state.carbon, state.carbon.usdcAddress, state.carbon.cotiAddress, amount);
-  if (coti > state.balances.ethereum.tokens.coti.value) return null;
   const out = await uniswapOut(coti, state.balances.ethereum.tokens.coti.decimals, path);
   const gross = out - amount;
-  return makeOpportunity(pairId, direction, route, amount, "USDCe", coti, "COTI", out, "USDC", gross, "USDC", gross, gasUsd);
+  return makeOpportunity(pairId, direction, route, amount, "USDCe", coti, "COTI", out, "USDC", gross, "USDC", gross, gasUsd, [
+    balanceBlocker("COTI-chain USDCe", amount, state.balances.coti.tokens.usdc.value),
+    balanceBlocker("Ethereum COTI", coti, state.balances.ethereum.tokens.coti.value),
+  ]);
 }
 
 function makeOpportunity(
@@ -272,20 +299,24 @@ function makeOpportunity(
   profitTokenSymbol: string,
   grossProfitUsd: number,
   gasUsd: number,
+  balanceBlockers: Array<string | null> = [],
 ): Opportunity {
   const netProfitUsd = grossProfitUsd - gasUsd;
+  const thresholdOk = netProfitUsd >= APP_CONFIG.minNetProfitUsd;
+  const reason = firstBlocker(balanceBlockers, thresholdOk);
   const warnings = [
     "Uniswap executes first. If Carbon fails, the first transaction remains final.",
   ];
-  if (netProfitUsd < APP_CONFIG.minNetProfitUsd) warnings.unshift(`Net profit is below $${APP_CONFIG.minNetProfitUsd}.`);
+  if (!thresholdOk) warnings.unshift(`Net profit is below $${APP_CONFIG.minNetProfitUsd}.`);
+  for (const blocker of balanceBlockers.filter((item): item is string => !!item)) warnings.unshift(blocker);
   return {
     action: direction === "buy_on_uniswap_sell_on_carbon" ? `Buy ${bridgeOutputSymbol} on Uniswap, sell on Carbon` : `Buy ${bridgeOutputSymbol} on Carbon, sell on Uniswap`,
     direction,
-    executable: netProfitUsd >= APP_CONFIG.minNetProfitUsd && inputAmount > 0 && outputAmount > 0,
+    executable: !reason && inputAmount > 0 && outputAmount > 0,
     netProfitUsd,
     pairId,
     pairLabel: pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC",
-    reason: netProfitUsd < APP_CONFIG.minNetProfitUsd ? "Net profit is below threshold." : undefined,
+    reason,
     route,
     summary: { inputAmount, inputSymbol, bridgeOutputAmount, bridgeOutputSymbol, outputAmount, outputSymbol, grossProfitUsd, gasUsd, profitTokenAmount, profitTokenSymbol },
     warnings,
@@ -296,9 +327,18 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
   const { source } = sourceInfo(state, pairId, direction);
   const max = source.value;
   let best: Opportunity | null = null;
-  for (const amount of sampleAmounts(max)) {
+  for (const amount of sampleAmounts(max, pairId)) {
     const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, ethUsd).catch(() => null);
-    if (candidate && (!best || candidate.netProfitUsd > best.netProfitUsd)) best = candidate;
+    if (!candidate) continue;
+    if (!best) {
+      best = candidate;
+      continue;
+    }
+    if (candidate.executable !== best.executable) {
+      if (candidate.executable) best = candidate;
+      continue;
+    }
+    if (candidate.netProfitUsd > best.netProfitUsd) best = candidate;
   }
   return best;
 }
@@ -313,7 +353,10 @@ export async function buildQuote(walletAddress: string) {
     bestOpportunity(state, "coti-usdc", "buy_on_carbon_sell_on_uniswap", price.cotiUsd, price.ethUsd),
   ]);
   const byPair: Opportunity[] = (["coti-gcoti", "coti-usdc"] as PairId[]).map((pairId) => {
-    const pairBest = settled.filter((item): item is Opportunity => !!item && item.pairId === pairId).sort((a, b) => b.netProfitUsd - a.netProfitUsd)[0];
+    const pairBest = settled.filter((item): item is Opportunity => !!item && item.pairId === pairId).sort((a, b) => {
+      if (a.executable !== b.executable) return a.executable ? -1 : 1;
+      return b.netProfitUsd - a.netProfitUsd;
+    })[0];
     return pairBest || {
       action: "No quote",
       direction: "buy_on_uniswap_sell_on_carbon",

@@ -14,6 +14,8 @@ export const APP_CONFIG = {
   cotiRpcUrl: import.meta.env.VITE_COTI_RPC_URL || "https://mainnet.coti.io/rpc",
   slippageBps: Number(import.meta.env.VITE_ARB_SLIPPAGE_BPS || 100),
   minNetProfitUsd: Number(import.meta.env.VITE_ARB_MIN_NET_PROFIT_USD || 10),
+  probeCotiAmounts: String(import.meta.env.VITE_ARB_PROBE_COTI_AMOUNTS || "550,1000,2500,5000").split(",").map(Number).filter((value) => value > 0),
+  probeUsdcAmounts: String(import.meta.env.VITE_ARB_PROBE_USDC_AMOUNTS || "25,50,100,250").split(",").map(Number).filter((value) => value > 0),
   deadlineSec: Number(import.meta.env.VITE_ARB_DEADLINE_SEC || 120),
   gasLimitBufferBps: Number(import.meta.env.VITE_ARB_GAS_LIMIT_BUFFER_BPS || 5000),
   uniswap: {
