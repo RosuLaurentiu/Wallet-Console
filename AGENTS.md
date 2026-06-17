@@ -5,7 +5,7 @@
 This repo is a private-use browser wallet app for COTI arbitrage execution and inventory rebalancing.
 The public-facing project name is intentionally neutral: `Wallet Console`.
 
-- Local folder: `C:\Users\rosu_\Desktop\COTI Projects\PrivateVaults\COTIArbSigner`
+- Local folder: `C:\Users\rosu_\Desktop\COTI Projects\PrivateVaults\WalletConsole`
 - Package name: `wallet-console`
 - GitHub Pages app: static Vite React app
 - No backend, no VPS API, no server secrets
