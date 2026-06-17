@@ -42,6 +42,7 @@ const GAS_UNITS = {
   uniswapSwap: 180000,
   carbonSwap: 350000,
 } as const;
+const uniswapPathCache = new Map<string, Promise<string[]>>();
 
 interface FeeRates {
   cotiUsdPerGas: number;
@@ -241,6 +242,10 @@ async function feeRates(cotiUsd: number | null, ethUsd: number | null): Promise<
 }
 
 async function uniswapPath(pairId: PairId, direction: Direction): Promise<string[]> {
+  const cacheKey = `${pairId}:${direction}`;
+  const cached = uniswapPathCache.get(cacheKey);
+  if (cached) return cached;
+  const pathPromise = (async () => {
   if (pairId === "coti-gcoti") {
     return direction === "buy_on_uniswap_sell_on_carbon"
       ? [APP_CONFIG.uniswap.coti, APP_CONFIG.uniswap.gcoti]
@@ -254,6 +259,9 @@ async function uniswapPath(pairId: PairId, direction: Direction): Promise<string
   return direction === "buy_on_uniswap_sell_on_carbon"
     ? [APP_CONFIG.uniswap.usdc, APP_CONFIG.uniswap.weth, APP_CONFIG.uniswap.coti]
     : [APP_CONFIG.uniswap.coti, APP_CONFIG.uniswap.weth, APP_CONFIG.uniswap.usdc];
+  })();
+  uniswapPathCache.set(cacheKey, pathPromise);
+  return pathPromise;
 }
 
 async function uniswapOut(amount: number, sourceDecimals: number, path: string[]): Promise<number> {
@@ -355,7 +363,7 @@ function buildRebalanceSummary(state: WalletState): RebalanceSummary {
   };
 }
 
-function candidateAmounts(max: number, pairId: PairId, steps = 80): number[] {
+function candidateAmounts(max: number, pairId: PairId, steps = 24): number[] {
   const probes = pairId === "coti-usdc" ? APP_CONFIG.probeUsdcAmounts : APP_CONFIG.probeCotiAmounts;
   const candidateSet = new Set<number>([max, ...probes]);
   for (let i = 1; i <= steps; i += 1) {
@@ -367,6 +375,21 @@ function candidateAmounts(max: number, pairId: PairId, steps = 80): number[] {
   return Array.from(candidateSet)
     .map((value) => Number(value.toFixed(6)))
     .filter((value) => value > 0)
+    .sort((a, b) => a - b);
+}
+
+function refinementAmounts(best: number, max: number): number[] {
+  if (best <= 0 || max <= 0) return [];
+  const lower = Math.max(best * 0.65, max * 0.001);
+  const upper = Math.min(best * 1.35, max);
+  const candidateSet = new Set<number>([best, lower, upper]);
+  for (let i = 1; i <= 12; i += 1) {
+    const t = i / 12;
+    candidateSet.add(lower + ((upper - lower) * t));
+  }
+  return Array.from(candidateSet)
+    .map((value) => Number(value.toFixed(6)))
+    .filter((value) => value > 0 && value <= max)
     .sort((a, b) => a - b);
 }
 
@@ -535,7 +558,9 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
   const max = source.value;
   let best: Opportunity | null = null;
   let lastError: unknown = null;
-  for (const amount of candidateAmounts(max, pairId)) {
+  let bestInputAmount: number | null = null;
+  const evaluateAmounts = async (amounts: number[]): Promise<void> => {
+    for (const amount of amounts) {
     const candidate = await evaluateCandidate(state, pairId, direction, amount, cotiUsd, fees).catch((error) => {
       lastError = error;
       return null;
@@ -543,14 +568,24 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
     if (!candidate) continue;
     if (!best) {
       best = candidate;
+      bestInputAmount = candidate.summary.inputAmount;
       continue;
     }
     if (candidate.executable !== best.executable) {
-      if (candidate.executable) best = candidate;
+      if (candidate.executable) {
+        best = candidate;
+        bestInputAmount = candidate.summary.inputAmount;
+      }
       continue;
     }
-    if (candidate.netProfitUsd > best.netProfitUsd) best = candidate;
+    if (candidate.netProfitUsd > best.netProfitUsd) {
+      best = candidate;
+      bestInputAmount = candidate.summary.inputAmount;
+    }
   }
+  };
+  await evaluateAmounts(candidateAmounts(max, pairId));
+  if (bestInputAmount !== null) await evaluateAmounts(refinementAmounts(bestInputAmount, max));
   if (!best && lastError) {
     console.warn(`Quote failed for ${pairId} ${direction}:`, lastError);
   }
