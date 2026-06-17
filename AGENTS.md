@@ -51,7 +51,7 @@ The public-facing project name is intentionally neutral: `Wallet Console`.
 npm ci
 npm test
 npm run lint
-VITE_BASE_PATH=/private-vault-app/ npm run build
+VITE_BASE_PATH=/Wallet-Console/ npm run build
 npm run dev
 ```
 
@@ -61,7 +61,7 @@ On Windows PowerShell:
 npm ci
 npm test
 npm run lint
-$env:VITE_BASE_PATH='/private-vault-app/'; npm run build
+$env:VITE_BASE_PATH='/Wallet-Console/'; npm run build
 npm run dev
 ```
 
@@ -76,10 +76,10 @@ The GitHub repository name controls the GitHub Pages base path. If the repo name
 Current GitHub Pages path:
 
 ```text
-https://rosulaurentiu.github.io/private-vault-app/
+https://rosulaurentiu.github.io/Wallet-Console/
 ```
 
-Intended neutral repository/Page name when GitHub settings are updated: `wallet-console`.
+Neutral repository/Page name: `Wallet-Console`.
 
 ## Things To Avoid
 

@@ -54,7 +54,7 @@ npm run dev
 ```bash
 npm run lint
 npm test
-VITE_BASE_PATH=/private-vault-app/ npm run build
+VITE_BASE_PATH=/Wallet-Console/ npm run build
 ```
 
 ## GitHub Pages
@@ -64,13 +64,7 @@ Deploy is automated by `.github/workflows/deploy-pages.yml`.
 Current URL:
 
 ```text
-https://rosulaurentiu.github.io/private-vault-app/
+https://rosulaurentiu.github.io/Wallet-Console/
 ```
 
-Intended neutral URL after the GitHub repository is renamed:
-
-```text
-https://rosulaurentiu.github.io/wallet-console/
-```
-
-Until the repository is renamed in GitHub settings, the live Pages path remains `/private-vault-app/`.
+The live Pages path follows the GitHub repository name, including capitalization.
