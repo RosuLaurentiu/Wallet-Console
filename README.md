@@ -1,6 +1,6 @@
-# COTI Arb Signer
+# Wallet Console
 
-Private browser-wallet tool for manually signing COTI arbitrage and small test rebalance transactions.
+Private browser-wallet tool for manually signing wallet operations.
 
 The app is static and deploys to GitHub Pages. It does not use a VPS API, does not receive private keys, and does not sign anything itself. The connected wallet signs every transaction through `eth_sendTransaction`.
 
@@ -54,7 +54,7 @@ npm run dev
 ```bash
 npm run lint
 npm test
-npm run build
+VITE_BASE_PATH=/wallet-console/ npm run build
 ```
 
 ## GitHub Pages
@@ -64,7 +64,5 @@ Deploy is automated by `.github/workflows/deploy-pages.yml`.
 Expected URL:
 
 ```text
-https://rosulaurentiu.github.io/private-vault-app/
+https://rosulaurentiu.github.io/wallet-console/
 ```
-
-The GitHub repository and Pages path are still `private-vault-app` for deployment compatibility, even though the local app folder/project name is now `COTIArbSigner`.

@@ -234,7 +234,7 @@ function App() {
     <main className="app">
       <header className="topbar">
         <div>
-          <h1>COTI Arb</h1>
+          <h1>Wallet Console</h1>
         </div>
         <div className="top-status">
           <div className={`status ${flow}`}>{flow}</div>

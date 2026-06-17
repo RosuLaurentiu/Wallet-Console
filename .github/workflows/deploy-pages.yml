@@ -33,7 +33,7 @@ jobs:
 
       - name: Build app
         env:
-          VITE_BASE_PATH: /private-vault-app/
+          VITE_BASE_PATH: /wallet-console/
         run: npm run build
 
       - name: Setup Pages
