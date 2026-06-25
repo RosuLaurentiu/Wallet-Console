@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { APP_CONFIG, ZERO_ADDRESS } from "./config";
-import { arbLegAmounts, bridgeRouteMetadata } from "./engine";
-import type { Opportunity, RebalanceSuggestion } from "./types";
+import { arbLegAmounts, bridgeRouteMetadata, buildRebalanceSummary, selectRebalanceSuggestions } from "./engine";
+import type { Opportunity, RebalanceSuggestion, TokenBalance, WalletBalances } from "./types";
 
 function opportunity(direction: Opportunity["direction"], inputAmount: number, bridgeOutputAmount: number): Pick<Opportunity, "direction" | "summary"> {
   return {
@@ -36,6 +36,38 @@ function suggestion(overrides: Partial<RebalanceSuggestion>): RebalanceSuggestio
   };
 }
 
+function balance(symbol: string, value: number): TokenBalance {
+  return {
+    address: `0x${symbol.toLowerCase()}`,
+    decimals: 18,
+    raw: String(value * 10 ** 18),
+    symbol,
+    value,
+  };
+}
+
+function balances(overrides: Partial<WalletBalances> = {}): WalletBalances {
+  return {
+    ethereum: {
+      native: balance("ETH", 1),
+      tokens: {
+        coti: balance("COTI", 0),
+        gcoti: balance("gCOTI", 0),
+        usdc: balance("USDC", 0),
+      },
+    },
+    coti: {
+      native: balance("COTI", 1),
+      tokens: {
+        coti: balance("COTI", 0),
+        gcoti: balance("gCOTI", 0),
+        usdc: balance("USDC", 0),
+      },
+    },
+    ...overrides,
+  };
+}
+
 describe("arb leg amounts", () => {
   it("uses the intermediate amount for COTI/gCOTI Carbon -> Uniswap", () => {
     const amounts = arbLegAmounts(opportunity("buy_on_carbon_sell_on_uniswap", 1000, 4300));
@@ -59,6 +91,54 @@ describe("arb leg amounts", () => {
     const amounts = arbLegAmounts(opportunity("buy_on_uniswap_sell_on_carbon", 500, 1200));
     expect(amounts.uniswapSourceAmount).toBe(500);
     expect(amounts.carbonSourceAmount).toBe(1200);
+  });
+});
+
+describe("rebalance summary", () => {
+  it("skips small rebalance amounts below the configured minimum", () => {
+    const summary = buildRebalanceSummary({
+      balances: balances({
+        ethereum: {
+          native: balance("ETH", 1),
+          tokens: {
+            coti: balance("COTI", 100),
+            gcoti: balance("gCOTI", 100),
+            usdc: balance("USDC", 0),
+          },
+        },
+        coti: {
+          native: balance("COTI", 1),
+          tokens: {
+            coti: balance("COTI", 60),
+            gcoti: balance("gCOTI", 20),
+            usdc: balance("USDC", 0),
+          },
+        },
+      }),
+    });
+    const coti = summary.suggestions.find((item) => item.token === "coti");
+    const gcoti = summary.suggestions.find((item) => item.token === "gcoti");
+    expect(coti).toMatchObject({
+      executable: false,
+      reason: `COTI rebalance amount 20 is below ${APP_CONFIG.rebalanceMinAmounts.coti} minimum.`,
+    });
+    expect(gcoti).toMatchObject({
+      amount: 40,
+      executable: true,
+    });
+  });
+
+  it("filters executable rebalance suggestions by selected token", () => {
+    const summary = {
+      executable: true,
+      suggestions: [
+        suggestion({ amount: 25, token: "coti", tokenSymbol: "COTI" }),
+        suggestion({ amount: 30, token: "gcoti", tokenSymbol: "gCOTI" }),
+      ],
+    };
+    expect(selectRebalanceSuggestions(summary, ["coti"]).executable.map((item) => item.token)).toEqual(["coti"]);
+    expect(selectRebalanceSuggestions(summary, ["gcoti"]).executable.map((item) => item.token)).toEqual(["gcoti"]);
+    expect(selectRebalanceSuggestions(summary).executable.map((item) => item.token)).toEqual(["coti", "gcoti"]);
   });
 });
 

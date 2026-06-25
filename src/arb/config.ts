@@ -3,6 +3,11 @@ import { getAddress } from "ethers";
 export const NATIVE_COTI = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+function positiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 export const APP_CONFIG = {
   allowedWallet: getAddress("0x5DFcEe20b5a3FDd3577436A32f62d4C0b39e979d"),
   carbonApiBase: "https://api.carbondefi.xyz",
@@ -18,6 +23,10 @@ export const APP_CONFIG = {
   probeUsdcAmounts: String(import.meta.env.VITE_ARB_PROBE_USDC_AMOUNTS || "25,50,100,250").split(",").map(Number).filter((value) => value > 0),
   deadlineSec: Number(import.meta.env.VITE_ARB_DEADLINE_SEC || 120),
   gasLimitBufferBps: Number(import.meta.env.VITE_ARB_GAS_LIMIT_BUFFER_BPS || 5000),
+  rebalanceMinAmounts: {
+    coti: positiveNumber(import.meta.env.VITE_REBALANCE_MIN_COTI, 25),
+    gcoti: positiveNumber(import.meta.env.VITE_REBALANCE_MIN_GCOTI, 25),
+  },
   bridge: {
     ethereumRecipient: getAddress("0x439D73635B9590E9d9e2CC9eCAB832B057d2E25B"),
     cotiRecipient: getAddress("0x61bf10a1a27b2d99de0a59a06200a62ed579d685"),

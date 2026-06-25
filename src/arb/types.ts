@@ -182,6 +182,10 @@ export interface RebalanceSummary {
   suggestions: RebalanceSuggestion[];
 }
 
+export interface RebalancePlanOptions {
+  tokens?: RebalanceTokenId[];
+}
+
 export interface PreparedRebalancePlan {
   generatedAtUtc: string;
   kind: "rebalance";

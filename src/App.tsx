@@ -18,17 +18,23 @@ import { checkPreparedStepBeforeSigning, preSignWarningText } from "./arb/preSig
 import { quoteReviewWarnings } from "./arb/reviewWarnings";
 import { waitForTransactionReceipt } from "./arb/receipts";
 import { tradeSummaryText } from "./arb/tradeMetadata";
-import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSummary, WalletBalances, WalletInventoryState } from "./arb/types";
+import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSuggestion, RebalanceSummary, RebalanceTokenId, WalletBalances, WalletInventoryState } from "./arb/types";
 import { connectProvider, currentAccount, discoverProviders, switchChain, type ProviderEntry } from "./arb/wallet";
 import { explorerTx, isAllowedWallet, numberFmt, sameAddress, shortAddress, usdFmt } from "./arb/utils";
 import "./index.css";
 
 type FlowState = "idle" | "loading" | "ready" | "signing" | "success" | "error";
+type RebalanceScope = "both" | RebalanceTokenId;
 
 const STEP_LABELS = ["Connect", "Quote", "Review", "Sign"] as const;
 const EMPTY_OPPORTUNITIES = [
   { pairId: "coti-gcoti" as PairId, pairLabel: "COTI/gCOTI" },
   { pairId: "coti-usdc" as PairId, pairLabel: "COTI/USDC" },
+];
+const REBALANCE_SCOPES: Array<{ label: string; value: RebalanceScope }> = [
+  { label: "Both", value: "both" },
+  { label: "COTI", value: "coti" },
+  { label: "gCOTI", value: "gcoti" },
 ];
 type OpportunityListItem = QuoteResult["opportunities"][number] | typeof EMPTY_OPPORTUNITIES[number];
 
@@ -61,11 +67,14 @@ function isQuotedOpportunity(item: OpportunityListItem): item is QuoteResult["op
   return "summary" in item && "netProfitUsd" in item;
 }
 
-function rebalanceText(rebalance: RebalanceSummary | null, activeBridgeCount: number): string {
+function rebalanceText(rebalance: RebalanceSummary | null, activeBridgeCount: number, selectedSuggestions: RebalanceSuggestion[]): string {
   if (activeBridgeCount > 0) return `${activeBridgeCount} bridge transfer${activeBridgeCount === 1 ? "" : "s"} still being tracked.`;
   if (!rebalance) return "Refresh balances.";
-  if (!rebalance.executable) return rebalance.reason || "No rebalance needed.";
-  const executableCount = rebalance.suggestions.filter((item) => item.executable).length;
+  const executableCount = selectedSuggestions.filter((item) => item.executable).length;
+  if (!executableCount) {
+    const selectedReason = selectedSuggestions.map((item) => item.reason).filter(Boolean).join(" ");
+    return selectedReason || rebalance.reason || "No rebalance needed.";
+  }
   return `Bridge ${executableCount} token${executableCount === 1 ? "" : "s"}.`;
 }
 
@@ -138,6 +147,7 @@ function App() {
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [inventory, setInventory] = useState<WalletInventoryState | null>(null);
   const [selectedPair, setSelectedPair] = useState<PairId>("coti-gcoti");
+  const [rebalanceScope, setRebalanceScope] = useState<RebalanceScope>("both");
   const [prepared, setPrepared] = useState<PreparedWalletPlan | null>(null);
   const [progress, setProgress] = useState<TxProgress[]>([]);
   const [signWarnings, setSignWarnings] = useState<string[]>([]);
@@ -160,6 +170,15 @@ function App() {
   const opportunityItems = quote?.opportunities || EMPTY_OPPORTUNITIES;
   const balances: WalletBalances | null = inventory?.balances || quote?.balances || null;
   const rebalance = inventory?.rebalance || quote?.rebalance || null;
+  const selectedRebalanceTokens = useMemo(
+    () => rebalanceScope === "both" ? (["coti", "gcoti"] as RebalanceTokenId[]) : [rebalanceScope],
+    [rebalanceScope],
+  );
+  const selectedRebalanceSuggestions = useMemo(() => {
+    const selected = new Set(selectedRebalanceTokens);
+    return rebalance?.suggestions.filter((suggestion) => suggestion.token && selected.has(suggestion.token)) || [];
+  }, [rebalance, selectedRebalanceTokens]);
+  const selectedRebalanceExecutable = selectedRebalanceSuggestions.some((suggestion) => suggestion.executable);
   const trackingWallet = account && allowed ? account : APP_CONFIG.allowedWallet;
   const trackedBridges = useMemo(
     () => bridgeItems.filter((item) => sameAddress(item.wallet, trackingWallet)),
@@ -267,6 +286,17 @@ function App() {
       setInventoryLoading(false);
     }
   }, [account, allowed]);
+
+  const chooseRebalanceScope = useCallback((scope: RebalanceScope) => {
+    setRebalanceScope(scope);
+    if (prepared?.kind === "rebalance") {
+      setPrepared(null);
+      setProgress([]);
+      setSignWarnings([]);
+      setFlow("idle");
+      setMessage("Review rebalance again.");
+    }
+  }, [prepared]);
 
   useEffect(() => {
     if (!account || !allowed || activeBridges.length === 0) return undefined;
@@ -399,7 +429,7 @@ function App() {
       setProgress([]);
       setSignWarnings([]);
       setMessage("Preparing rebalance...");
-      const plan = await prepareRebalancePlan(account);
+      const plan = await prepareRebalancePlan(account, { tokens: selectedRebalanceTokens });
       setPrepared(plan);
       setProgress(plan.steps.map((step) => ({
         chain: step.chain,
@@ -414,7 +444,7 @@ function App() {
       setFlow("error");
       setMessage(parseError(error));
     }
-  }, [account, allowed, rebalanceBlockedByBridge]);
+  }, [account, allowed, rebalanceBlockedByBridge, selectedRebalanceTokens]);
 
   const sign = useCallback(async () => {
     if (!selectedProvider || !prepared) return;
@@ -643,20 +673,33 @@ function App() {
             <div className="review-head">
               <div>
                 <h3>Rebalance 50/50</h3>
-                <p>{rebalanceText(rebalance, activeBridges.length)}</p>
+                <p>{rebalanceText(rebalance, activeBridges.length, selectedRebalanceSuggestions)}</p>
               </div>
-              {rebalance ? <span className={rebalance.executable && !rebalanceBlockedByBridge ? "pill ok" : "pill blocked"}>{rebalanceBlockedByBridge ? "tracking" : rebalance.executable ? "ready" : "blocked"}</span> : null}
+              {rebalance ? <span className={selectedRebalanceExecutable && !rebalanceBlockedByBridge ? "pill ok" : "pill blocked"}>{rebalanceBlockedByBridge ? "tracking" : selectedRebalanceExecutable ? "ready" : "blocked"}</span> : null}
+            </div>
+            <div className="rebalance-scope" role="group" aria-label="Rebalance scope">
+              {REBALANCE_SCOPES.map((scope) => (
+                <button
+                  className={rebalanceScope === scope.value ? "active" : ""}
+                  key={scope.value}
+                  disabled={flow === "loading" || flow === "signing"}
+                  onClick={() => chooseRebalanceScope(scope.value)}
+                  type="button"
+                >
+                  {scope.label}
+                </button>
+              ))}
             </div>
             {rebalance?.suggestions.map((suggestion) => (
-              <div className={`rebalance-details ${suggestion.executable ? "" : "muted-row"}`} key={suggestion.token || suggestion.tokenSymbol || suggestion.reason}>
+              <div className={`rebalance-details ${suggestion.executable ? "" : "muted-row"} ${suggestion.token && selectedRebalanceTokens.includes(suggestion.token) ? "" : "unselected"}`} key={suggestion.token || suggestion.tokenSymbol || suggestion.reason}>
                 <span>{suggestion.executable ? `${suggestion.sourceChain} -> ${suggestion.targetChain}` : suggestion.reason}</span>
                 <strong>{suggestion.executable ? `${numberFmt(suggestion.amount)} ${suggestion.tokenSymbol}` : suggestion.tokenSymbol}</strong>
-                <small>{suggestion.executable ? "50/50 amount" : "no action"}</small>
+                <small>{suggestion.token && selectedRebalanceTokens.includes(suggestion.token) ? suggestion.executable ? "selected" : "no action" : "skipped"}</small>
               </div>
             ))}
             {!rebalance ? <p className="muted">Balances appear after connecting or refreshing.</p> : null}
             <div className="button-row">
-              <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !rebalance?.executable || rebalanceBlockedByBridge || flow === "loading" || flow === "signing"}>Rebalance</button>
+              <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !selectedRebalanceExecutable || rebalanceBlockedByBridge || flow === "loading" || flow === "signing"}>Rebalance</button>
               <button type="button" onClick={() => { void refreshInventory(); }} disabled={!account || !allowed || inventoryLoading || flow === "loading" || flow === "signing"}>{inventoryLoading ? "Refreshing" : "Refresh balances"}</button>
             </div>
           </section>

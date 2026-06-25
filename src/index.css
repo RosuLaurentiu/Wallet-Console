@@ -497,6 +497,26 @@ small {
   border-left-color: rgba(251, 113, 133, 0.65);
 }
 
+.rebalance-scope {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.rebalance-scope button {
+  min-height: 34px;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 7px 8px;
+}
+
+.rebalance-scope button.active {
+  border-color: rgba(45, 212, 191, 0.6);
+  background: rgba(45, 212, 191, 0.14);
+  color: var(--text);
+}
+
 .rebalance-details {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -518,6 +538,10 @@ small {
 .rebalance-details.muted-row {
   background: rgba(255, 255, 255, 0.02);
   opacity: 0.72;
+}
+
+.rebalance-details.unselected {
+  opacity: 0.46;
 }
 
 .numbers,

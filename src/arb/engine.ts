@@ -17,6 +17,7 @@ import type {
   PreparedRebalancePlan,
   PreparedStep,
   QuoteResult,
+  RebalancePlanOptions,
   RebalanceSummary,
   RebalanceSuggestion,
   RebalanceTokenId,
@@ -337,13 +338,13 @@ function rebalanceCandidate(state: { balances: WalletBalances }, tokenId: Rebala
 
   const difference = ethBalance - cotiBalance;
   const needed = Math.abs(difference) / 2;
-  const dust = tokenId === "coti" ? 0.5 : 5;
-  if (needed < dust) {
+  const minimum = APP_CONFIG.rebalanceMinAmounts[tokenId];
+  if (needed < minimum) {
     return {
       amount: 0,
       direction: null,
       executable: false,
-      reason: `${tokenSymbol} is already close to 50/50.`,
+      reason: `${tokenSymbol} rebalance amount ${cleanAmount(needed, 6)} is below ${cleanAmount(minimum, 6)} minimum.`,
       sourceBalance: difference > 0 ? ethBalance : cotiBalance,
       targetBalance: difference > 0 ? cotiBalance : ethBalance,
       token: tokenId,
@@ -384,6 +385,18 @@ export function buildRebalanceSummary(state: { balances: WalletBalances }): Reba
     executable: true,
     suggestions: candidates,
   };
+}
+
+export function selectRebalanceSuggestions(rebalance: RebalanceSummary, tokens: RebalanceTokenId[] = ["coti", "gcoti"]): {
+  executable: RebalanceSuggestion[];
+  reason: string;
+  selected: RebalanceSuggestion[];
+} {
+  const selectedTokens = new Set(tokens);
+  const selected = rebalance.suggestions.filter((suggestion) => suggestion.token && selectedTokens.has(suggestion.token));
+  const executable = selected.filter((suggestion) => suggestion.executable);
+  const reason = selected.map((suggestion) => suggestion.reason).filter(Boolean).join(" ");
+  return { executable, reason, selected };
 }
 
 function candidateAmounts(max: number, pairId: PairId, steps = 24): number[] {
@@ -727,11 +740,14 @@ async function buildRebalanceStep(state: WalletState, suggestion: RebalanceSugge
   };
 }
 
-export async function prepareRebalancePlan(walletAddress: string): Promise<PreparedRebalancePlan> {
+export async function prepareRebalancePlan(walletAddress: string, options: RebalancePlanOptions = {}): Promise<PreparedRebalancePlan> {
   const state = await loadWalletState(walletAddress);
   const rebalance = buildRebalanceSummary(state);
-  const suggestions = rebalance.suggestions.filter((suggestion) => suggestion.executable);
-  if (!suggestions.length) throw new Error(rebalance.reason || "No rebalance action is available.");
+  const selected = selectRebalanceSuggestions(rebalance, options.tokens?.length ? options.tokens : undefined);
+  const suggestions = selected.executable;
+  if (!suggestions.length) {
+    throw new Error(selected.reason || rebalance.reason || "No rebalance action is available for the selected token.");
+  }
   const steps = await Promise.all(suggestions.map((suggestion) => buildRebalanceStep(state, suggestion)));
   const indexedSteps = steps.map((step, index) => ({ ...step, index: index + 1 }));
   assertAllowedRebalancePlan(indexedSteps, state.carbon.gcotiAddress);
