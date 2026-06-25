@@ -5,6 +5,7 @@ import {
   cleanupBridgeTrackingItems,
   fetchRecentBridgeTrackingItems,
   loadBridgeTrackingItems,
+  markBridgeTrackingFailed,
   mergeBridgeTrackingItems,
   normalizeBridgeStatus,
   saveBridgeTrackingItems,
@@ -92,6 +93,12 @@ describe("bridge tracker storage", () => {
     expect(mergeBridgeTrackingItems([resolved], [imported])).toEqual([resolved]);
   });
 
+  it("does not overwrite local failed status with imported unknown status", () => {
+    const failed = item({ status: "failed", updatedAtUtc: "2026-06-24T00:01:00.000Z" });
+    const imported = item({ status: "unknown", updatedAtUtc: undefined });
+    expect(mergeBridgeTrackingItems([failed], [imported])).toEqual([failed]);
+  });
+
   it("keeps unresolved entries while cleaning old resolved entries", () => {
     const now = Date.parse("2026-06-25T00:00:00.000Z");
     const unresolvedOld = item({ status: "in_progress", submittedAtUtc: "2026-06-01T00:00:00.000Z" });
@@ -150,6 +157,34 @@ describe("bridge tracker storage", () => {
       tokenSymbol: "gCOTI",
       wallet: "0xWallet",
     });
+  });
+
+  it("preserves failed status from imported route transactions when present", () => {
+    const imported = bridgeTrackingItemFromImport("0xWallet", {
+      destinationNetworkId: String(APP_CONFIG.coti.chainId),
+      formatted_value: "12.5",
+      overall_status: "Failed",
+      sourceNetworkId: String(APP_CONFIG.ethereum.chainId),
+      timestamp: "2026-06-24T12:00:00.000Z",
+      token: "gCOTI",
+      token_address: "0xToken",
+      tx_hash: "0xImported",
+    }, Date.parse("2026-06-25T00:00:00.000Z"));
+    expect(imported).toMatchObject({
+      overallStatus: "Failed",
+      status: "failed",
+      updatedAtUtc: "2026-06-24T12:00:00.000Z",
+    });
+  });
+
+  it("marks a locally submitted bridge transaction as failed when its source receipt reverts", () => {
+    const failed = markBridgeTrackingFailed(item({ status: "unknown" }), new Error("Bridge source transaction reverted."));
+    expect(failed).toMatchObject({
+      error: "Bridge source transaction reverted.",
+      overallStatus: "Failed",
+      status: "failed",
+    });
+    expect(failed.stages.map((stage) => stage.status)).toEqual(["Done", "Failed"]);
   });
 
   it("imports only recent bridge history from the all-transactions endpoint", async () => {

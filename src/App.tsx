@@ -7,6 +7,7 @@ import {
   isBridgeResolved,
   loadBridgeTrackingItems,
   markBridgeTrackingError,
+  markBridgeTrackingFailed,
   mergeBridgeTrackingItems,
   saveBridgeTrackingItems,
   type BridgeTrackingItem,
@@ -77,6 +78,12 @@ function chainLabel(chainId: number | null): string {
 function bridgeStatusLabel(status: BridgeTrackingItem["status"]): string {
   if (status === "in_progress") return "in progress";
   return status;
+}
+
+function bridgeStatusPillClass(status: BridgeTrackingItem["status"]): string {
+  if (status === "done") return "ok";
+  if (status === "refunded") return "warn";
+  return "blocked";
 }
 
 function bridgeStatusText(item: BridgeTrackingItem): string {
@@ -160,6 +167,7 @@ function App() {
   );
   const activeBridges = useMemo(() => trackedBridges.filter((item) => !isBridgeResolved(item)), [trackedBridges]);
   const resolvedBridges = useMemo(() => trackedBridges.filter(isBridgeResolved), [trackedBridges]);
+  const failedBridgeCount = useMemo(() => trackedBridges.filter((item) => item.status === "failed" || item.status === "refunded").length, [trackedBridges]);
   const rebalanceBlockedByBridge = activeBridges.length > 0;
   const preparedWarnings = prepared?.kind === "arb" ? prepared.reviewWarnings || [] : [];
   const quotePreviewWarnings = selectedOpportunity && quote ? quoteReviewWarnings(quote, selectedOpportunity, nowMs).filter((warning) => warning.code === "stale-quote") : [];
@@ -425,6 +433,12 @@ function App() {
         status: "waiting" as const,
       }));
       const submittedBridgeItems: BridgeTrackingItem[] = [];
+      const persistBridgeItem = (item: BridgeTrackingItem) => {
+        const next = mergeBridgeTrackingItems(loadBridgeTrackingItems(), [item]);
+        saveBridgeTrackingItems(next);
+        setBridgeItems(next);
+        return item;
+      };
       setProgress(nextProgress);
       setSignWarnings([]);
       for (const step of prepared.steps) {
@@ -453,15 +467,24 @@ function App() {
         });
         if (typeof hash !== "string") throw new Error(`${step.label} did not return a transaction hash.`);
         setProgress((items) => items.map((item) => item.index === step.index ? { ...item, hash, message: "Waiting for receipt", status: "mining" } : item));
+        let trackingItem: BridgeTrackingItem | null = null;
         if (prepared.kind === "rebalance" && step.bridge) {
-          const trackingItem = bridgeTrackingItemFromStep(prepared.wallet, hash, step.bridge);
+          trackingItem = bridgeTrackingItemFromStep(prepared.wallet, hash, step.bridge);
           submittedBridgeItems.push(trackingItem);
-          const next = mergeBridgeTrackingItems(loadBridgeTrackingItems(), [trackingItem]);
-          saveBridgeTrackingItems(next);
-          setBridgeItems(next);
+          persistBridgeItem(trackingItem);
         }
-        const receipt = await waitForTransactionReceipt(step.chain, hash);
-        if (receipt.status !== "success") throw new Error(`${step.label} transaction reverted.`);
+        let receipt;
+        try {
+          receipt = await waitForTransactionReceipt(step.chain, hash);
+        } catch (receiptError) {
+          if (trackingItem) persistBridgeItem(markBridgeTrackingError(trackingItem, receiptError));
+          throw receiptError;
+        }
+        if (receipt.status !== "success") {
+          const failure = new Error(`${step.label} source transaction reverted.`);
+          if (trackingItem) persistBridgeItem(markBridgeTrackingFailed(trackingItem, failure));
+          throw failure;
+        }
         const minedMessage = receipt.blockNumber ? `Mined in block ${receipt.blockNumber}` : "Mined";
         setProgress((items) => items.map((item) => item.index === step.index ? { ...item, message: minedMessage, status: "success" } : item));
       }
@@ -642,9 +665,15 @@ function App() {
             <div className="review-head">
               <div>
                 <h3>Bridge tracking</h3>
-                <p>{activeBridges.length ? "Waiting for bridge arrival." : trackedBridges.length ? "No unresolved bridge transfers." : bridgeHistoryMessage}</p>
+                <p>{activeBridges.length
+                  ? "Waiting for bridge arrival."
+                  : failedBridgeCount
+                    ? `${failedBridgeCount} failed or refunded bridge transfer${failedBridgeCount === 1 ? "" : "s"} in history.`
+                    : trackedBridges.length
+                      ? "No unresolved bridge transfers."
+                      : bridgeHistoryMessage}</p>
               </div>
-              <span className={activeBridges.length ? "pill blocked" : trackedBridges.length ? "pill ok" : "pill"}>{activeBridges.length ? "active" : trackedBridges.length ? "resolved" : "history"}</span>
+              <span className={activeBridges.length ? "pill blocked" : failedBridgeCount ? "pill warn" : trackedBridges.length ? "pill ok" : "pill"}>{activeBridges.length ? "active" : failedBridgeCount ? "review" : trackedBridges.length ? "resolved" : "history"}</span>
             </div>
             {trackedBridges.length ? (
               <div className="bridge-list">
@@ -655,7 +684,7 @@ function App() {
                         <strong>{item.tokenSymbol} {item.sourceChain} {"->"} {item.targetChain}</strong>
                         <small>{numberFmt(item.amount)} {item.tokenSymbol}</small>
                       </div>
-                      <span className={`pill ${isBridgeResolved(item) ? "ok" : "blocked"}`}>{bridgeStatusLabel(item.status)}</span>
+                      <span className={`pill ${bridgeStatusPillClass(item.status)}`}>{bridgeStatusLabel(item.status)}</span>
                     </div>
                     <small>{bridgeStatusText(item)}</small>
                     <div className="bridge-stages">

@@ -65,8 +65,10 @@ export interface ImportedBridgeTransaction {
   destinationNetworkId?: string | null;
   formatted_value?: string | null;
   id?: number;
+  overall_status?: string | null;
   sourceNetwork?: string | null;
   sourceNetworkId?: string | null;
+  status?: string | null;
   timestamp?: string | null;
   token?: string | null;
   token_address?: string | null;
@@ -238,19 +240,22 @@ export function bridgeTrackingItemFromImport(wallet: string, item: ImportedBridg
   const targetChain = chainFromNetworkId(destinationNetworkId);
   if (!hash || !sourceNetworkId || !destinationNetworkId || !tokenAddress || !tokenSymbol || !sourceChain || !targetChain) return null;
   const submittedMs = parseBridgeTimestamp(item.timestamp) || nowMs;
+  const importedStatus = normalizeBridgeStatus(item.overall_status || item.status);
   return {
     amount: amountFromImport(item),
     destinationNetworkId,
     hash,
     id: `${sourceNetworkId}:${destinationNetworkId}:${tokenAddress.toLowerCase()}:${hash.toLowerCase()}`,
+    overallStatus: item.overall_status || item.status || undefined,
     sourceChain,
     sourceNetworkId,
     stages: [],
-    status: "unknown",
+    status: importedStatus,
     submittedAtUtc: new Date(submittedMs).toISOString(),
     targetChain,
     tokenAddress,
     tokenSymbol,
+    updatedAtUtc: importedStatus === "unknown" ? undefined : new Date(submittedMs).toISOString(),
     wallet,
   };
 }
@@ -313,6 +318,36 @@ export function markBridgeTrackingError(item: BridgeTrackingItem, error: unknown
     ...item,
     error: parseError(error),
     status: isBridgeResolved(item) ? item.status : "unknown",
+    updatedAtUtc: new Date().toISOString(),
+  };
+}
+
+export function markBridgeTrackingFailed(item: BridgeTrackingItem, error: unknown): BridgeTrackingItem {
+  const message = parseError(error);
+  return {
+    ...item,
+    error: message,
+    overallStatus: "Failed",
+    stages: item.stages.length ? item.stages : [
+      {
+        completed: true,
+        description: "Source transaction was submitted.",
+        label: "Detected",
+        status: "Done",
+        stepId: 1,
+        systemName: "Wallet",
+      },
+      {
+        completed: false,
+        description: message,
+        errorDetails: message,
+        label: "Source transaction",
+        status: "Failed",
+        stepId: 2,
+        systemName: "Wallet",
+      },
+    ],
+    status: "failed",
     updatedAtUtc: new Date().toISOString(),
   };
 }

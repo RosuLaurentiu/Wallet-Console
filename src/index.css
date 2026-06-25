@@ -359,6 +359,11 @@ small {
   border-color: rgba(251, 113, 133, 0.45);
 }
 
+.pill.warn {
+  color: #fde68a;
+  border-color: rgba(248, 189, 69, 0.48);
+}
+
 .opportunities {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -442,6 +447,7 @@ small {
 }
 
 .bridge-item.failed,
+.bridge-item.refunded,
 .bridge-item.unknown {
   border-color: rgba(251, 113, 133, 0.32);
 }
