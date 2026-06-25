@@ -138,6 +138,8 @@ function App() {
   const [message, setMessage] = useState("Connect wallet.");
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [bridgeItems, setBridgeItems] = useState<BridgeTrackingItem[]>(() => loadBridgeTrackingItems());
+  const [bridgeHistoryLoading, setBridgeHistoryLoading] = useState(false);
+  const [bridgeHistoryMessage, setBridgeHistoryMessage] = useState("Recent bridge history loads from the public tracker.");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showBalances, setShowBalances] = useState(false);
@@ -151,9 +153,10 @@ function App() {
   const opportunityItems = quote?.opportunities || EMPTY_OPPORTUNITIES;
   const balances: WalletBalances | null = inventory?.balances || quote?.balances || null;
   const rebalance = inventory?.rebalance || quote?.rebalance || null;
+  const trackingWallet = account && allowed ? account : APP_CONFIG.allowedWallet;
   const trackedBridges = useMemo(
-    () => account ? bridgeItems.filter((item) => sameAddress(item.wallet, account)) : [],
-    [account, bridgeItems],
+    () => bridgeItems.filter((item) => sameAddress(item.wallet, trackingWallet)),
+    [bridgeItems, trackingWallet],
   );
   const activeBridges = useMemo(() => trackedBridges.filter((item) => !isBridgeResolved(item)), [trackedBridges]);
   const resolvedBridges = useMemo(() => trackedBridges.filter(isBridgeResolved), [trackedBridges]);
@@ -181,14 +184,18 @@ function App() {
 
   const refreshTrackedBridges = useCallback(async (walletOverride = account, importHistory = false) => {
     const wallet = walletOverride;
+    let importError: string | null = null;
     let stored = cleanupBridgeTrackingItems(loadBridgeTrackingItems());
     if (!wallet) {
       setBridgeItems(stored);
       return stored;
     }
     if (importHistory) {
+      setBridgeHistoryLoading(true);
+      setBridgeHistoryMessage("Loading recent bridge history...");
       const imported = await fetchRecentBridgeTrackingItems(wallet).catch((error) => {
         console.warn("Bridge history import failed:", error);
+        importError = parseError(error);
         return [];
       });
       stored = cleanupBridgeTrackingItems(mergeBridgeTrackingItems(stored, imported));
@@ -197,6 +204,10 @@ function App() {
     if (!relevant.length) {
       saveBridgeTrackingItems(stored);
       setBridgeItems(stored);
+      if (importHistory) {
+        setBridgeHistoryLoading(false);
+        setBridgeHistoryMessage(importError ? `Bridge history import failed: ${importError}` : "No recent bridge transfers found.");
+      }
       return stored;
     }
     const refreshed = await Promise.all(relevant.map(async (item) => (
@@ -208,8 +219,19 @@ function App() {
     const next = cleanupBridgeTrackingItems(mergeBridgeTrackingItems(otherWallets, refreshed));
     saveBridgeTrackingItems(next);
     setBridgeItems(next);
+    if (importHistory) {
+      const count = next.filter((item) => sameAddress(item.wallet, wallet)).length;
+      setBridgeHistoryLoading(false);
+      setBridgeHistoryMessage(importError
+        ? `Bridge history import failed: ${importError}`
+        : `Loaded ${count} recent bridge transfer${count === 1 ? "" : "s"}.`);
+    }
     return next;
   }, [account]);
+
+  useEffect(() => {
+    void refreshTrackedBridges(APP_CONFIG.allowedWallet, true);
+  }, [refreshTrackedBridges]);
 
   const refreshInventory = useCallback(async (quiet = false) => {
     if (!account || !allowed) {
@@ -457,11 +479,10 @@ function App() {
   }, [prepared, refreshInventory, refreshTrackedBridges, selectedProvider]);
 
   const clearResolvedBridges = useCallback(() => {
-    if (!account) return;
-    const next = cleanupBridgeTrackingItems(loadBridgeTrackingItems()).filter((item) => !(sameAddress(item.wallet, account) && isBridgeResolved(item)));
+    const next = cleanupBridgeTrackingItems(loadBridgeTrackingItems()).filter((item) => !(sameAddress(item.wallet, trackingWallet) && isBridgeResolved(item)));
     saveBridgeTrackingItems(next);
     setBridgeItems(next);
-  }, [account]);
+  }, [trackingWallet]);
 
   const activeStep = account ? quote ? prepared ? 3 : 2 : 1 : 0;
 
@@ -617,15 +638,15 @@ function App() {
             </div>
           </section>
 
-          {trackedBridges.length ? (
-            <section className="bridge-card">
-              <div className="review-head">
-                <div>
-                  <h3>Bridge tracking</h3>
-                  <p>{activeBridges.length ? "Waiting for bridge arrival." : "No unresolved bridge transfers."}</p>
-                </div>
-                <span className={activeBridges.length ? "pill blocked" : "pill ok"}>{activeBridges.length ? "active" : "resolved"}</span>
+          <section className="bridge-card">
+            <div className="review-head">
+              <div>
+                <h3>Bridge tracking</h3>
+                <p>{activeBridges.length ? "Waiting for bridge arrival." : trackedBridges.length ? "No unresolved bridge transfers." : bridgeHistoryMessage}</p>
               </div>
+              <span className={activeBridges.length ? "pill blocked" : trackedBridges.length ? "pill ok" : "pill"}>{activeBridges.length ? "active" : trackedBridges.length ? "resolved" : "history"}</span>
+            </div>
+            {trackedBridges.length ? (
               <div className="bridge-list">
                 {trackedBridges.map((item) => (
                   <div className={`bridge-item ${item.status}`} key={item.id}>
@@ -652,12 +673,14 @@ function App() {
                   </div>
                 ))}
               </div>
-              <div className="button-row">
-                <button type="button" onClick={() => { void refreshTrackedBridges(account, true); }} disabled={flow === "signing"}>Refresh tracking</button>
-                <button type="button" onClick={clearResolvedBridges} disabled={!resolvedBridges.length || flow === "signing"}>Clear resolved</button>
-              </div>
-            </section>
-          ) : null}
+            ) : (
+              <p className="muted">{bridgeHistoryLoading ? "Checking tracker..." : "Recent bridge transfers will appear here after the tracker responds."}</p>
+            )}
+            <div className="button-row">
+              <button type="button" onClick={() => { void refreshTrackedBridges(trackingWallet, true); }} disabled={bridgeHistoryLoading || flow === "signing"}>{bridgeHistoryLoading ? "Loading history" : "Refresh tracking"}</button>
+              <button type="button" onClick={clearResolvedBridges} disabled={!resolvedBridges.length || flow === "signing"}>Clear resolved</button>
+            </div>
+          </section>
 
           {prepared ? (
             <div className="sign-card">
