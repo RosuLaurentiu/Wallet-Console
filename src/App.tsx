@@ -1,24 +1,47 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  bridgeTrackingItemFromStep,
+  cleanupBridgeTrackingItems,
+  fetchBridgeTrackingItem,
+  fetchRecentBridgeTrackingItems,
+  isBridgeResolved,
+  loadBridgeTrackingItems,
+  markBridgeTrackingError,
+  mergeBridgeTrackingItems,
+  saveBridgeTrackingItems,
+  type BridgeTrackingItem,
+} from "./arb/bridgeTracker";
 import { APP_CONFIG } from "./arb/config";
-import { buildQuote, preparePlan, prepareRebalancePlan } from "./arb/engine";
-import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSummary } from "./arb/types";
+import { buildQuote, loadWalletInventory, preparePlan, prepareRebalancePlan } from "./arb/engine";
+import { checkPreparedStepBeforeSigning, preSignWarningText } from "./arb/preSignCheck";
+import { quoteReviewWarnings } from "./arb/reviewWarnings";
+import { waitForTransactionReceipt } from "./arb/receipts";
+import { tradeSummaryText } from "./arb/tradeMetadata";
+import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSummary, WalletBalances, WalletInventoryState } from "./arb/types";
 import { connectProvider, currentAccount, discoverProviders, switchChain, type ProviderEntry } from "./arb/wallet";
-import { explorerTx, isAllowedWallet, numberFmt, shortAddress, usdFmt } from "./arb/utils";
+import { explorerTx, isAllowedWallet, numberFmt, sameAddress, shortAddress, usdFmt } from "./arb/utils";
 import "./index.css";
 
 type FlowState = "idle" | "loading" | "ready" | "signing" | "success" | "error";
+
+const STEP_LABELS = ["Connect", "Quote", "Review", "Sign"] as const;
+const EMPTY_OPPORTUNITIES = [
+  { pairId: "coti-gcoti" as PairId, pairLabel: "COTI/gCOTI" },
+  { pairId: "coti-usdc" as PairId, pairLabel: "COTI/USDC" },
+];
+type OpportunityListItem = QuoteResult["opportunities"][number] | typeof EMPTY_OPPORTUNITIES[number];
 
 interface TxProgress {
   hash?: string;
   index: number;
   label: string;
   message: string;
-  status: "pending" | "success" | "error" | "waiting";
+  status: "mining" | "pending" | "success" | "error" | "waiting";
   chain?: "ethereum" | "coti";
 }
 
 function stepName(index: number): string {
-  return ["Connect", "Quote", "Review", "Sign"][index] || "";
+  return STEP_LABELS[index] || "";
 }
 
 function parseError(error: unknown): string {
@@ -33,10 +56,16 @@ function pairTitle(pairId: PairId): string {
   return pairId === "coti-gcoti" ? "COTI/gCOTI" : "COTI/USDC";
 }
 
-function rebalanceText(rebalance: RebalanceSummary | null): string {
-  if (!rebalance) return "Quote first.";
+function isQuotedOpportunity(item: OpportunityListItem): item is QuoteResult["opportunities"][number] {
+  return "summary" in item && "netProfitUsd" in item;
+}
+
+function rebalanceText(rebalance: RebalanceSummary | null, activeBridgeCount: number): string {
+  if (activeBridgeCount > 0) return `${activeBridgeCount} bridge transfer${activeBridgeCount === 1 ? "" : "s"} still being tracked.`;
+  if (!rebalance) return "Refresh balances.";
   if (!rebalance.executable) return rebalance.reason || "No rebalance needed.";
-  return `Bridge ${rebalance.suggestions.filter((item) => item.executable).length} token${rebalance.suggestions.filter((item) => item.executable).length === 1 ? "" : "s"}.`;
+  const executableCount = rebalance.suggestions.filter((item) => item.executable).length;
+  return `Bridge ${executableCount} token${executableCount === 1 ? "" : "s"}.`;
 }
 
 function chainLabel(chainId: number | null): string {
@@ -45,17 +74,71 @@ function chainLabel(chainId: number | null): string {
   return chainId === null ? "n/a" : String(chainId);
 }
 
+function bridgeStatusLabel(status: BridgeTrackingItem["status"]): string {
+  if (status === "in_progress") return "in progress";
+  return status;
+}
+
+function bridgeStatusText(item: BridgeTrackingItem): string {
+  if (item.error) return item.error;
+  const activeStage = item.stages.find((stage) => !stage.completed) || item.stages[item.stages.length - 1];
+  if (activeStage?.errorDetails) return activeStage.errorDetails;
+  if (activeStage?.description) return `${activeStage.label || activeStage.systemName}: ${activeStage.description}`;
+  return item.overallStatus || "Waiting for tracker.";
+}
+
+function bridgeStageRows(item: BridgeTrackingItem) {
+  if (item.stages.length) {
+    return item.stages.map((stage) => ({
+      detail: stage.errorDetails || stage.description || stage.currentStep || stage.status,
+      key: `${stage.stepId}:${stage.systemName}`,
+      label: stage.label || stage.systemName,
+      state: stage.errorDetails || stage.status.toLowerCase() === "error" ? "error" : stage.completed ? "done" : "active",
+    }));
+  }
+  const failed = Boolean(item.error) || item.status === "failed" || item.status === "refunded";
+  return [
+    { detail: "Source transaction submitted.", key: "detected", label: "Detected", state: "done" },
+    { detail: item.error || item.overallStatus || "Waiting for tracker data.", key: "preparing", label: "Preparing", state: failed ? "error" : item.status === "done" ? "done" : "active" },
+    { detail: item.destinationHash ? "Arrival transaction found." : "Destination transaction not found yet.", key: "arrival", label: "Arrival", state: item.status === "done" || item.destinationHash ? "done" : failed ? "error" : "active" },
+  ];
+}
+
+function walletInventoryFromQuote(result: QuoteResult): WalletInventoryState {
+  return {
+    balances: result.balances,
+    generatedAtUtc: result.generatedAtUtc,
+    rebalance: result.rebalance,
+    wallet: result.wallet,
+  };
+}
+
+function bestOpportunityByNet(result: QuoteResult) {
+  return result.opportunities.reduce((best, item) => (
+    !best || item.netProfitAfterFeesUsd > best.netProfitAfterFeesUsd ? item : best
+  ), null as QuoteResult["opportunities"][number] | null);
+}
+
+function appendUnique(items: string[], incoming: string[]): string[] {
+  return Array.from(new Set([...items, ...incoming]));
+}
+
 function App() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [providerId, setProviderId] = useState("");
   const [account, setAccount] = useState("");
   const [chainId, setChainId] = useState<number | null>(null);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
+  const [inventory, setInventory] = useState<WalletInventoryState | null>(null);
   const [selectedPair, setSelectedPair] = useState<PairId>("coti-gcoti");
   const [prepared, setPrepared] = useState<PreparedWalletPlan | null>(null);
   const [progress, setProgress] = useState<TxProgress[]>([]);
+  const [signWarnings, setSignWarnings] = useState<string[]>([]);
   const [flow, setFlow] = useState<FlowState>("idle");
   const [message, setMessage] = useState("Connect wallet.");
+  const [inventoryLoading, setInventoryLoading] = useState(false);
+  const [bridgeItems, setBridgeItems] = useState<BridgeTrackingItem[]>(() => loadBridgeTrackingItems());
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showBalances, setShowBalances] = useState(false);
 
@@ -65,7 +148,19 @@ function App() {
   );
   const allowed = account ? isAllowedWallet(account) : false;
   const selectedOpportunity = quote?.opportunities.find((item) => item.pairId === selectedPair) || null;
-  const rebalance = quote?.rebalance || null;
+  const opportunityItems = quote?.opportunities || EMPTY_OPPORTUNITIES;
+  const balances: WalletBalances | null = inventory?.balances || quote?.balances || null;
+  const rebalance = inventory?.rebalance || quote?.rebalance || null;
+  const trackedBridges = useMemo(
+    () => account ? bridgeItems.filter((item) => sameAddress(item.wallet, account)) : [],
+    [account, bridgeItems],
+  );
+  const activeBridges = useMemo(() => trackedBridges.filter((item) => !isBridgeResolved(item)), [trackedBridges]);
+  const resolvedBridges = useMemo(() => trackedBridges.filter(isBridgeResolved), [trackedBridges]);
+  const rebalanceBlockedByBridge = activeBridges.length > 0;
+  const preparedWarnings = prepared?.kind === "arb" ? prepared.reviewWarnings || [] : [];
+  const quotePreviewWarnings = selectedOpportunity && quote ? quoteReviewWarnings(quote, selectedOpportunity, nowMs).filter((warning) => warning.code === "stale-quote") : [];
+  const preparedStepByIndex = useMemo(() => new Map(prepared?.steps.map((step) => [step.index, step]) || []), [prepared]);
 
   useEffect(() => {
     discoverProviders().then((items) => {
@@ -73,6 +168,86 @@ function App() {
       setProviderId((current) => current || items[0]?.id || "");
     });
   }, []);
+
+  useEffect(() => {
+    setBridgeItems(loadBridgeTrackingItems());
+  }, [account]);
+
+  useEffect(() => {
+    if (!quote) return undefined;
+    const interval = window.setInterval(() => setNowMs(Date.now()), 10000);
+    return () => window.clearInterval(interval);
+  }, [quote]);
+
+  const refreshTrackedBridges = useCallback(async (walletOverride = account, importHistory = false) => {
+    const wallet = walletOverride;
+    let stored = cleanupBridgeTrackingItems(loadBridgeTrackingItems());
+    if (!wallet) {
+      setBridgeItems(stored);
+      return stored;
+    }
+    if (importHistory) {
+      const imported = await fetchRecentBridgeTrackingItems(wallet).catch((error) => {
+        console.warn("Bridge history import failed:", error);
+        return [];
+      });
+      stored = cleanupBridgeTrackingItems(mergeBridgeTrackingItems(stored, imported));
+    }
+    const relevant = stored.filter((item) => sameAddress(item.wallet, wallet));
+    if (!relevant.length) {
+      saveBridgeTrackingItems(stored);
+      setBridgeItems(stored);
+      return stored;
+    }
+    const refreshed = await Promise.all(relevant.map(async (item) => (
+      isBridgeResolved(item)
+        ? item
+        : fetchBridgeTrackingItem(item).catch((error) => markBridgeTrackingError(item, error))
+    )));
+    const otherWallets = stored.filter((item) => !sameAddress(item.wallet, wallet));
+    const next = cleanupBridgeTrackingItems(mergeBridgeTrackingItems(otherWallets, refreshed));
+    saveBridgeTrackingItems(next);
+    setBridgeItems(next);
+    return next;
+  }, [account]);
+
+  const refreshInventory = useCallback(async (quiet = false) => {
+    if (!account || !allowed) {
+      if (!quiet) setMessage("Connect wallet first.");
+      return null;
+    }
+    try {
+      setInventoryLoading(true);
+      if (!quiet) {
+        setFlow("loading");
+        setMessage("Refreshing balances...");
+      }
+      const result = await loadWalletInventory(account);
+      setInventory(result);
+      if (!quiet) {
+        setFlow("ready");
+        setMessage("Balances updated.");
+      }
+      return result;
+    } catch (error) {
+      if (!quiet) setFlow("error");
+      setMessage(parseError(error));
+      return null;
+    } finally {
+      setInventoryLoading(false);
+    }
+  }, [account, allowed]);
+
+  useEffect(() => {
+    if (!account || !allowed || activeBridges.length === 0) return undefined;
+    const refresh = () => {
+      void refreshTrackedBridges();
+      void refreshInventory(true);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30000);
+    return () => window.clearInterval(interval);
+  }, [account, activeBridges.length, allowed, refreshInventory, refreshTrackedBridges]);
 
   const connect = useCallback(async () => {
     if (!selectedProvider) {
@@ -88,26 +263,40 @@ function App() {
       setChainId(result.chainId);
       setPrepared(null);
       setQuote(null);
+      setInventory(null);
       setProgress([]);
+      setSignWarnings([]);
+      setBridgeItems(loadBridgeTrackingItems());
       if (!isAllowedWallet(result.address)) {
         setFlow("error");
         setMessage(`${shortAddress(result.address)} not allowed.`);
         return;
       }
+      setMessage("Importing bridge history...");
+      await refreshTrackedBridges(result.address, true);
+      setMessage("Loading balances...");
+      try {
+        setInventory(await loadWalletInventory(result.address));
+        setMessage("Ready. Balances updated.");
+      } catch (inventoryError) {
+        setMessage(`Ready. Balance refresh failed: ${parseError(inventoryError)}`);
+      }
       setFlow("ready");
-      setMessage("Ready.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
     }
-  }, [selectedProvider]);
+  }, [refreshTrackedBridges, selectedProvider]);
 
   const forget = useCallback(() => {
     setAccount("");
     setChainId(null);
     setQuote(null);
+    setInventory(null);
     setPrepared(null);
     setProgress([]);
+    setSignWarnings([]);
+    setBridgeItems(loadBridgeTrackingItems());
     setFlow("idle");
     setMessage("Wallet forgotten.");
   }, []);
@@ -121,10 +310,13 @@ function App() {
       setFlow("loading");
       setPrepared(null);
       setProgress([]);
+      setSignWarnings([]);
       setMessage("Quoting...");
       const result = await buildQuote(account);
       setQuote(result);
-      const best = result.opportunities.slice().sort((a, b) => b.netProfitAfterFeesUsd - a.netProfitAfterFeesUsd)[0];
+      setInventory(walletInventoryFromQuote(result));
+      setNowMs(Date.now());
+      const best = bestOpportunityByNet(result);
       if (best) setSelectedPair(best.pairId);
       setFlow("ready");
       setMessage("Quote updated.");
@@ -142,9 +334,12 @@ function App() {
     try {
       setFlow("loading");
       setProgress([]);
+      setSignWarnings([]);
       setMessage("Preparing txs...");
       const plan = await preparePlan(account, selectedPair);
-      setPrepared(plan);
+      const warnings = quoteReviewWarnings(quote, plan.opportunity);
+      const reviewedPlan = { ...plan, reviewWarnings: warnings };
+      setPrepared(reviewedPlan);
       setProgress(plan.steps.map((step) => ({
         chain: step.chain,
         index: step.index,
@@ -153,21 +348,26 @@ function App() {
         status: "waiting",
       })));
       setFlow("ready");
-      setMessage("Review prepared.");
+      setMessage(warnings.length ? "Review prepared with warnings." : "Review prepared.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
     }
-  }, [account, allowed, selectedOpportunity, selectedPair]);
+  }, [account, allowed, quote, selectedOpportunity, selectedPair]);
 
   const reviewRebalance = useCallback(async () => {
     if (!account || !allowed) {
       setMessage("Connect wallet first.");
       return;
     }
+    if (rebalanceBlockedByBridge) {
+      setMessage("A bridge transfer is still unresolved. Wait for tracking to finish before rebalancing again.");
+      return;
+    }
     try {
       setFlow("loading");
       setProgress([]);
+      setSignWarnings([]);
       setMessage("Preparing rebalance...");
       const plan = await prepareRebalancePlan(account);
       setPrepared(plan);
@@ -184,7 +384,7 @@ function App() {
       setFlow("error");
       setMessage(parseError(error));
     }
-  }, [account, allowed]);
+  }, [account, allowed, rebalanceBlockedByBridge]);
 
   const sign = useCallback(async () => {
     if (!selectedProvider || !prepared) return;
@@ -202,8 +402,21 @@ function App() {
         message: "Waiting for signature",
         status: "waiting" as const,
       }));
+      const submittedBridgeItems: BridgeTrackingItem[] = [];
       setProgress(nextProgress);
+      setSignWarnings([]);
       for (const step of prepared.steps) {
+        setProgress((items) => items.map((item) => item.index === step.index ? { ...item, message: "Checking wallet state", status: "pending" } : item));
+        try {
+          const warnings = await checkPreparedStepBeforeSigning(prepared.wallet, step);
+          if (warnings.length) {
+            const texts = warnings.map(preSignWarningText);
+            setSignWarnings((items) => appendUnique(items, texts));
+          }
+        } catch (checkError) {
+          const text = `Step ${step.index} ${step.label}: Wallet state recheck failed: ${parseError(checkError)}`;
+          setSignWarnings((items) => appendUnique(items, [text]));
+        }
         await switchChain(selectedProvider, {
           blockExplorerUrls: [step.chain === "ethereum" ? APP_CONFIG.ethereum.explorer : APP_CONFIG.coti.explorer],
           chainIdHex: step.chain === "ethereum" ? APP_CONFIG.ethereum.chainIdHex : APP_CONFIG.coti.chainIdHex,
@@ -217,16 +430,38 @@ function App() {
           params: [step.tx],
         });
         if (typeof hash !== "string") throw new Error(`${step.label} did not return a transaction hash.`);
-        setProgress((items) => items.map((item) => item.index === step.index ? { ...item, hash, message: "Submitted", status: "success" } : item));
+        setProgress((items) => items.map((item) => item.index === step.index ? { ...item, hash, message: "Waiting for receipt", status: "mining" } : item));
+        if (prepared.kind === "rebalance" && step.bridge) {
+          const trackingItem = bridgeTrackingItemFromStep(prepared.wallet, hash, step.bridge);
+          submittedBridgeItems.push(trackingItem);
+          const next = mergeBridgeTrackingItems(loadBridgeTrackingItems(), [trackingItem]);
+          saveBridgeTrackingItems(next);
+          setBridgeItems(next);
+        }
+        const receipt = await waitForTransactionReceipt(step.chain, hash);
+        if (receipt.status !== "success") throw new Error(`${step.label} transaction reverted.`);
+        const minedMessage = receipt.blockNumber ? `Mined in block ${receipt.blockNumber}` : "Mined";
+        setProgress((items) => items.map((item) => item.index === step.index ? { ...item, message: minedMessage, status: "success" } : item));
       }
       setFlow("success");
-      setMessage(prepared.kind === "rebalance" ? "Bridge submitted. Track before rebalancing again." : "Submitted. Refresh before trading again.");
+      if (prepared.kind === "rebalance") {
+        if (submittedBridgeItems.length) await refreshTrackedBridges(prepared.wallet, true);
+      }
+      await refreshInventory(true);
+      setMessage(prepared.kind === "rebalance" ? "Bridge submitted. Tracking arrival." : "Submitted. Refresh before trading again.");
     } catch (error) {
       setFlow("error");
       setMessage(parseError(error));
-      setProgress((items) => items.map((item) => item.status === "pending" ? { ...item, message: "Failed or rejected", status: "error" } : item));
+      setProgress((items) => items.map((item) => item.status === "pending" || item.status === "mining" ? { ...item, message: "Failed, rejected, or timed out", status: "error" } : item));
     }
-  }, [prepared, selectedProvider]);
+  }, [prepared, refreshInventory, refreshTrackedBridges, selectedProvider]);
+
+  const clearResolvedBridges = useCallback(() => {
+    if (!account) return;
+    const next = cleanupBridgeTrackingItems(loadBridgeTrackingItems()).filter((item) => !(sameAddress(item.wallet, account) && isBridgeResolved(item)));
+    saveBridgeTrackingItems(next);
+    setBridgeItems(next);
+  }, [account]);
 
   const activeStep = account ? quote ? prepared ? 3 : 2 : 1 : 0;
 
@@ -237,7 +472,7 @@ function App() {
           <h1>Wallet Console</h1>
         </div>
         <div className="top-status">
-          <div className={`status ${flow}`}>{flow}</div>
+          <div className={`status ${flow}`} aria-live="polite">{flow}</div>
           <small>{account ? `${shortAddress(account)} - ${chainLabel(chainId)}` : "wallet not connected"}</small>
         </div>
       </header>
@@ -263,7 +498,7 @@ function App() {
           </label>
           <Info label="Wallet" value={account ? shortAddress(account) : "not connected"} />
           <Info label="Network" value={chainLabel(chainId)} />
-          {account && !allowed ? <div className="blocked">This wallet is not allowed.</div> : null}
+          {account && !allowed ? <div className="access-blocked">This wallet is not allowed.</div> : null}
           <div className="action-buttons">
             <button className="primary" type="button" onClick={connect}>{account ? "Change" : "Connect"}</button>
             <button type="button" onClick={forget} disabled={!account}>Forget</button>
@@ -281,11 +516,8 @@ function App() {
           </div>
 
           <div className="opportunities">
-            {(quote?.opportunities || [
-              { pairId: "coti-gcoti" as PairId, pairLabel: "COTI/gCOTI" },
-              { pairId: "coti-usdc" as PairId, pairLabel: "COTI/USDC" },
-            ]).map((item) => {
-              const opportunity = "summary" in item ? item : null;
+            {opportunityItems.map((item) => {
+              const opportunity = isQuotedOpportunity(item) ? item : null;
               const pairId = item.pairId;
               return (
                 <button className={`opportunity ${selectedPair === pairId ? "selected" : ""} ${opportunity?.executable ? "ok" : "blocked"}`} type="button" key={pairId} onClick={() => setSelectedPair(pairId)}>
@@ -317,6 +549,11 @@ function App() {
                 <div><span>Net after fees</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
               </div>
               <div className="route-note">Uniswap first. Carbon second. No bridge.</div>
+              {quotePreviewWarnings.length ? (
+                <div className="warning-list">
+                  {quotePreviewWarnings.map((warning) => <p key={warning.message}>{warning.message}</p>)}
+                </div>
+              ) : null}
               {selectedOpportunity.reason ? <div className="warning">{selectedOpportunity.reason}</div> : null}
               <div className="button-row">
                 <button className="primary" type="button" onClick={review} disabled={!selectedOpportunity.executable || flow === "loading" || flow === "signing"}>Review</button>
@@ -327,13 +564,44 @@ function App() {
             <div className="empty">Connect wallet and quote.</div>
           )}
 
+          <section className="balances-collapse">
+            <button type="button" onClick={() => setShowBalances((value) => !value)}>
+              {showBalances ? "Hide balances" : "Show balances"}
+            </button>
+            {showBalances ? (
+              balances ? (
+                <>
+                  {inventory ? <p className="muted">Updated {new Date(inventory.generatedAtUtc).toLocaleTimeString()}</p> : null}
+                  <div className="balances-grid">
+                    <div>
+                      <h3>Ethereum</h3>
+                      <Balance label="COTI" value={balances.ethereum.tokens.coti.value} />
+                      <Balance label="gCOTI" value={balances.ethereum.tokens.gcoti.value} />
+                      <Balance label="USDC" value={balances.ethereum.tokens.usdc.value} />
+                      <Balance label="ETH gas" value={balances.ethereum.native.value} />
+                    </div>
+                    <div>
+                      <h3>COTI</h3>
+                      <Balance label="COTI" value={balances.coti.tokens.coti.value} />
+                      <Balance label="gCOTI" value={balances.coti.tokens.gcoti.value} />
+                      <Balance label="USDCe" value={balances.coti.tokens.usdc.value} />
+                      <Balance label="COTI gas" value={balances.coti.native.value} />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="muted">Balances appear after connecting.</p>
+              )
+            ) : null}
+          </section>
+
           <section className="rebalance-card">
             <div className="review-head">
               <div>
                 <h3>Rebalance 50/50</h3>
-                <p>{rebalanceText(rebalance)}</p>
+                <p>{rebalanceText(rebalance, activeBridges.length)}</p>
               </div>
-              {rebalance ? <span className={rebalance.executable ? "pill ok" : "pill blocked"}>{rebalance.executable ? "ready" : "blocked"}</span> : null}
+              {rebalance ? <span className={rebalance.executable && !rebalanceBlockedByBridge ? "pill ok" : "pill blocked"}>{rebalanceBlockedByBridge ? "tracking" : rebalance.executable ? "ready" : "blocked"}</span> : null}
             </div>
             {rebalance?.suggestions.map((suggestion) => (
               <div className={`rebalance-details ${suggestion.executable ? "" : "muted-row"}`} key={suggestion.token || suggestion.tokenSymbol || suggestion.reason}>
@@ -342,11 +610,54 @@ function App() {
                 <small>{suggestion.executable ? "50/50 amount" : "no action"}</small>
               </div>
             ))}
+            {!rebalance ? <p className="muted">Balances appear after connecting or refreshing.</p> : null}
             <div className="button-row">
-              <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !rebalance?.executable || flow === "loading" || flow === "signing"}>Rebalance</button>
-              <button type="button" onClick={refreshQuote} disabled={!account || !allowed || flow === "loading" || flow === "signing"}>Refresh</button>
+              <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !rebalance?.executable || rebalanceBlockedByBridge || flow === "loading" || flow === "signing"}>Rebalance</button>
+              <button type="button" onClick={() => { void refreshInventory(); }} disabled={!account || !allowed || inventoryLoading || flow === "loading" || flow === "signing"}>{inventoryLoading ? "Refreshing" : "Refresh balances"}</button>
             </div>
           </section>
+
+          {trackedBridges.length ? (
+            <section className="bridge-card">
+              <div className="review-head">
+                <div>
+                  <h3>Bridge tracking</h3>
+                  <p>{activeBridges.length ? "Waiting for bridge arrival." : "No unresolved bridge transfers."}</p>
+                </div>
+                <span className={activeBridges.length ? "pill blocked" : "pill ok"}>{activeBridges.length ? "active" : "resolved"}</span>
+              </div>
+              <div className="bridge-list">
+                {trackedBridges.map((item) => (
+                  <div className={`bridge-item ${item.status}`} key={item.id}>
+                    <div className="bridge-item-head">
+                      <div>
+                        <strong>{item.tokenSymbol} {item.sourceChain} {"->"} {item.targetChain}</strong>
+                        <small>{numberFmt(item.amount)} {item.tokenSymbol}</small>
+                      </div>
+                      <span className={`pill ${isBridgeResolved(item) ? "ok" : "blocked"}`}>{bridgeStatusLabel(item.status)}</span>
+                    </div>
+                    <small>{bridgeStatusText(item)}</small>
+                    <div className="bridge-stages">
+                      {bridgeStageRows(item).map((stage) => (
+                        <div className={`bridge-stage ${stage.state}`} key={stage.key}>
+                          <span>{stage.label}</span>
+                          <small>{stage.detail}</small>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="bridge-links">
+                      <a href={explorerTx(item.sourceChain, item.hash)} target="_blank" rel="noreferrer">source {shortAddress(item.hash)}</a>
+                      {item.destinationHash ? <a href={explorerTx(item.targetChain, item.destinationHash)} target="_blank" rel="noreferrer">arrival {shortAddress(item.destinationHash)}</a> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={() => { void refreshTrackedBridges(account, true); }} disabled={flow === "signing"}>Refresh tracking</button>
+                <button type="button" onClick={clearResolvedBridges} disabled={!resolvedBridges.length || flow === "signing"}>Clear resolved</button>
+              </div>
+            </section>
+          ) : null}
 
           {prepared ? (
             <div className="sign-card">
@@ -357,52 +668,38 @@ function App() {
                 </div>
                 <button className="danger" type="button" onClick={sign} disabled={flow === "signing"}>Start signatures</button>
               </div>
+              {preparedWarnings.length ? (
+                <div className="warning-list">
+                  {preparedWarnings.map((warning) => <p key={warning.message}>{warning.message}</p>)}
+                </div>
+              ) : null}
+              {signWarnings.length ? (
+                <div className="warning-list">
+                  {signWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+                </div>
+              ) : null}
               <div className="tx-list">
-                {progress.map((item) => (
-                  <div className={`tx-row ${item.status}`} key={item.index}>
-                    <span>{item.index}</span>
-                    <div>
-                      <strong>{item.label}</strong>
-                      <small>{item.message}</small>
-                      {item.hash && item.chain ? <a href={explorerTx(item.chain, item.hash)} target="_blank" rel="noreferrer">{shortAddress(item.hash)}</a> : null}
+                {progress.map((item) => {
+                  const step = preparedStepByIndex.get(item.index);
+                  return (
+                    <div className={`tx-row ${item.status}`} key={item.index}>
+                      <span>{item.index}</span>
+                      <div>
+                        <strong>{item.label}</strong>
+                        {step?.trade ? <small className="trade-line">{tradeSummaryText(step.trade)}</small> : null}
+                        <small>{item.message}</small>
+                        {item.hash && item.chain ? <a href={explorerTx(item.chain, item.hash)} target="_blank" rel="noreferrer">{shortAddress(item.hash)}</a> : null}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ) : null}
 
           {showAdvanced ? (
-            <pre className="advanced">{JSON.stringify({ quote, prepared }, null, 2)}</pre>
+            <pre className="advanced">{JSON.stringify({ quote, inventory, prepared, trackedBridges }, null, 2)}</pre>
           ) : null}
-
-          <section className="balances-collapse">
-            <button type="button" onClick={() => setShowBalances((value) => !value)}>
-              {showBalances ? "Hide balances" : "Show balances"}
-            </button>
-            {showBalances ? (
-              quote ? (
-                <div className="balances-grid">
-                  <div>
-                    <h3>Ethereum</h3>
-                    <Balance label="COTI" value={quote.balances.ethereum.tokens.coti.value} />
-                    <Balance label="gCOTI" value={quote.balances.ethereum.tokens.gcoti.value} />
-                    <Balance label="USDC" value={quote.balances.ethereum.tokens.usdc.value} />
-                    <Balance label="ETH gas" value={quote.balances.ethereum.native.value} />
-                  </div>
-                  <div>
-                    <h3>COTI</h3>
-                    <Balance label="COTI" value={quote.balances.coti.tokens.coti.value} />
-                    <Balance label="gCOTI" value={quote.balances.coti.tokens.gcoti.value} />
-                    <Balance label="USDCe" value={quote.balances.coti.tokens.usdc.value} />
-                    <Balance label="COTI gas" value={quote.balances.coti.native.value} />
-                  </div>
-                </div>
-              ) : (
-                <p className="muted">Balances appear after quoting.</p>
-              )
-            ) : null}
-          </section>
         </section>
       </section>
     </main>

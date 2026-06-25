@@ -97,12 +97,56 @@ export interface QuoteResult {
   rebalance: RebalanceSummary;
 }
 
+export interface WalletInventoryState {
+  generatedAtUtc: string;
+  wallet: string;
+  balances: WalletBalances;
+  rebalance: RebalanceSummary;
+}
+
+export interface BridgeStepMetadata {
+  amount: number;
+  destinationNetworkId: string;
+  sourceChain: ChainKey;
+  sourceNetworkId: string;
+  targetChain: ChainKey;
+  token: RebalanceTokenId;
+  tokenAddress: string;
+  tokenSymbol: "COTI" | "gCOTI";
+}
+
+export interface TokenAmountMetadata {
+  address: string;
+  decimals: number;
+  display: string;
+  raw: string;
+  symbol: string;
+}
+
+export interface TradeStepMetadata {
+  action: "approve" | "swap" | "bridge";
+  minTarget?: TokenAmountMetadata;
+  protocol: "Uniswap" | "Carbon" | "Bridge";
+  reviewAllowanceRaw?: string | null;
+  reviewSourceBalanceRaw?: string;
+  source: TokenAmountMetadata;
+  spender?: string;
+  target?: TokenAmountMetadata;
+}
+
+export interface PreparedPlanWarning {
+  code: "stale-quote" | "quote-drift";
+  message: string;
+}
+
 export interface PreparedStep {
+  bridge?: BridgeStepMetadata;
   chain: ChainKey;
   description: string;
   index: number;
   label: string;
   token: string;
+  trade?: TradeStepMetadata;
   tx: { data: string; from: string; gas?: string; to: string; value: string };
   type: StepType;
 }
@@ -112,6 +156,7 @@ export interface PreparedPlan {
   kind: "arb";
   opportunity: Opportunity;
   pairId: PairId;
+  reviewWarnings?: PreparedPlanWarning[];
   steps: PreparedStep[];
   wallet: string;
   warning: string;

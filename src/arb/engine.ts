@@ -5,8 +5,10 @@ import { Contract, Interface, JsonRpcProvider, formatEther, formatUnits, getAddr
 import { ERC20_ABI, UNISWAP_FACTORY_ABI, UNISWAP_ROUTER_ABI } from "./abis";
 import { APP_CONFIG, NATIVE_COTI, ZERO_ADDRESS } from "./config";
 import { assertAllowedPlan, assertAllowedRebalancePlan } from "./guards";
+import { decimalStringToRaw, tokenAmountMetadata } from "./tradeMetadata";
 import type {
   AllowanceState,
+  BridgeStepMetadata,
   CarbonContext,
   Direction,
   Opportunity,
@@ -14,10 +16,14 @@ import type {
   PreparedPlan,
   PreparedRebalancePlan,
   PreparedStep,
+  QuoteResult,
   RebalanceSummary,
   RebalanceSuggestion,
   RebalanceTokenId,
   TokenBalance,
+  TradeStepMetadata,
+  WalletBalances,
+  WalletInventoryState,
   WalletState,
 } from "./types";
 import {
@@ -183,9 +189,7 @@ async function allowance(provider: JsonRpcProvider, owner: string, tokenAddress:
   return { raw: raw.toString(), value: Number(formatUnits(raw, decimals)) };
 }
 
-export async function loadWalletState(walletAddress: string): Promise<WalletState> {
-  const owner = normalizeAddress(walletAddress, "wallet");
-  const carbon = await fetchCarbonContext();
+async function loadWalletBalances(owner: string, carbon: CarbonContext): Promise<WalletBalances> {
   const [ethNative, ethCoti, ethGcoti, ethUsdc, cotiNative, carbonGcoti, carbonUsdc] = await Promise.all([
     tokenBalance(ethProvider, owner, NATIVE_COTI, "ETH"),
     tokenBalance(ethProvider, owner, APP_CONFIG.uniswap.coti, "COTI"),
@@ -196,24 +200,43 @@ export async function loadWalletState(walletAddress: string): Promise<WalletStat
     tokenBalance(cotiProvider, owner, carbon.usdcAddress, "USDCe"),
   ]);
   const carbonCoti: TokenBalance = { ...cotiNative, address: carbon.cotiAddress, symbol: "COTI" };
+  return {
+    ethereum: { native: ethNative, tokens: { coti: ethCoti, gcoti: ethGcoti, usdc: ethUsdc } },
+    coti: { native: cotiNative, tokens: { coti: carbonCoti, gcoti: carbonGcoti, usdc: carbonUsdc } },
+  };
+}
+
+export async function loadWalletInventory(walletAddress: string): Promise<WalletInventoryState> {
+  const owner = normalizeAddress(walletAddress, "wallet");
+  const carbon = await fetchCarbonContext();
+  const balances = await loadWalletBalances(owner, carbon);
+  return {
+    balances,
+    generatedAtUtc: new Date().toISOString(),
+    rebalance: buildRebalanceSummary({ balances }),
+    wallet: owner,
+  };
+}
+
+export async function loadWalletState(walletAddress: string): Promise<WalletState> {
+  const owner = normalizeAddress(walletAddress, "wallet");
+  const carbon = await fetchCarbonContext();
+  const balances = await loadWalletBalances(owner, carbon);
   const [ethCotiAllowance, ethGcotiAllowance, ethUsdcAllowance, carbonGcotiAllowance, carbonUsdcAllowance] = await Promise.all([
-    allowance(ethProvider, owner, APP_CONFIG.uniswap.coti, APP_CONFIG.uniswap.router, ethCoti.decimals),
-    allowance(ethProvider, owner, APP_CONFIG.uniswap.gcoti, APP_CONFIG.uniswap.router, ethGcoti.decimals),
-    allowance(ethProvider, owner, APP_CONFIG.uniswap.usdc, APP_CONFIG.uniswap.router, ethUsdc.decimals),
-    allowance(cotiProvider, owner, carbon.gcotiAddress, APP_CONFIG.carbonController, carbonGcoti.decimals),
-    allowance(cotiProvider, owner, carbon.usdcAddress, APP_CONFIG.carbonController, carbonUsdc.decimals),
+    allowance(ethProvider, owner, APP_CONFIG.uniswap.coti, APP_CONFIG.uniswap.router, balances.ethereum.tokens.coti.decimals),
+    allowance(ethProvider, owner, APP_CONFIG.uniswap.gcoti, APP_CONFIG.uniswap.router, balances.ethereum.tokens.gcoti.decimals),
+    allowance(ethProvider, owner, APP_CONFIG.uniswap.usdc, APP_CONFIG.uniswap.router, balances.ethereum.tokens.usdc.decimals),
+    allowance(cotiProvider, owner, carbon.gcotiAddress, APP_CONFIG.carbonController, balances.coti.tokens.gcoti.decimals),
+    allowance(cotiProvider, owner, carbon.usdcAddress, APP_CONFIG.carbonController, balances.coti.tokens.usdc.decimals),
   ]);
   return {
-    owner,
-    balances: {
-      ethereum: { native: ethNative, tokens: { coti: ethCoti, gcoti: ethGcoti, usdc: ethUsdc } },
-      coti: { native: cotiNative, tokens: { coti: carbonCoti, gcoti: carbonGcoti, usdc: carbonUsdc } },
-    },
     allowances: {
       ethereum: { coti: ethCotiAllowance, gcoti: ethGcotiAllowance, usdc: ethUsdcAllowance },
       coti: { coti: { native: true, raw: null, value: Number.POSITIVE_INFINITY }, gcoti: carbonGcotiAllowance, usdc: carbonUsdcAllowance },
     },
+    balances,
     carbon,
+    owner,
   };
 }
 
@@ -294,7 +317,7 @@ function sourceInfo(state: WalletState, pairId: PairId, direction: Direction) {
     : { source: state.balances.coti.tokens.usdc, opposite: state.balances.ethereum.tokens.coti };
 }
 
-function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): RebalanceSuggestion {
+function rebalanceCandidate(state: { balances: WalletBalances }, tokenId: RebalanceTokenId): RebalanceSuggestion {
   const tokenSymbol = tokenId === "coti" ? "COTI" : "gCOTI";
   const ethBalance = state.balances.ethereum.tokens[tokenId].value;
   const cotiBalance = state.balances.coti.tokens[tokenId].value;
@@ -347,7 +370,7 @@ function rebalanceCandidate(state: WalletState, tokenId: RebalanceTokenId): Reba
   };
 }
 
-function buildRebalanceSummary(state: WalletState): RebalanceSummary {
+export function buildRebalanceSummary(state: { balances: WalletBalances }): RebalanceSummary {
   const candidates = (["coti", "gcoti"] as RebalanceTokenId[]).map((tokenId) => rebalanceCandidate(state, tokenId));
   const executable = candidates.filter((candidate) => candidate.executable);
   if (!executable.length) {
@@ -592,8 +615,7 @@ async function bestOpportunity(state: WalletState, pairId: PairId, direction: Di
   return best;
 }
 
-export async function buildQuote(walletAddress: string) {
-  const state = await loadWalletState(walletAddress);
+async function buildQuoteFromState(state: WalletState): Promise<QuoteResult> {
   const price = await prices();
   const fees = await feeRates(price.cotiUsd, price.ethUsd);
   const settled = await Promise.all([
@@ -633,10 +655,37 @@ export async function buildQuote(walletAddress: string) {
   };
 }
 
+export async function buildQuote(walletAddress: string): Promise<QuoteResult> {
+  return buildQuoteFromState(await loadWalletState(walletAddress));
+}
+
 function rebalanceTokenAddress(state: WalletState, suggestion: RebalanceSuggestion): string {
   if (!suggestion.token || !suggestion.sourceChain) throw new Error("No rebalance token selected.");
   if (suggestion.sourceChain === "ethereum") return APP_CONFIG.uniswap[suggestion.token];
   return suggestion.token === "coti" ? NATIVE_COTI : state.carbon.gcotiAddress;
+}
+
+export function bridgeRouteMetadata(suggestion: RebalanceSuggestion, carbonGcotiAddress: string): BridgeStepMetadata {
+  if (!suggestion.executable || !suggestion.token || !suggestion.sourceChain || !suggestion.targetChain || !suggestion.tokenSymbol) {
+    throw new Error(suggestion.reason || "No bridge route is available.");
+  }
+  const sourceNetworkId = suggestion.sourceChain === "ethereum" ? String(APP_CONFIG.ethereum.chainId) : String(APP_CONFIG.coti.chainId);
+  const destinationNetworkId = suggestion.targetChain === "ethereum" ? String(APP_CONFIG.ethereum.chainId) : String(APP_CONFIG.coti.chainId);
+  const tokenAddress = suggestion.sourceChain === "ethereum"
+    ? APP_CONFIG.uniswap[suggestion.token]
+    : suggestion.token === "coti"
+      ? ZERO_ADDRESS
+      : carbonGcotiAddress;
+  return {
+    amount: suggestion.amount,
+    destinationNetworkId,
+    sourceChain: suggestion.sourceChain,
+    sourceNetworkId,
+    targetChain: suggestion.targetChain,
+    token: suggestion.token,
+    tokenAddress,
+    tokenSymbol: suggestion.tokenSymbol,
+  };
 }
 
 function rebalanceSourceBalance(state: WalletState, suggestion: RebalanceSuggestion): TokenBalance {
@@ -661,11 +710,18 @@ async function buildRebalanceStep(state: WalletState, suggestion: RebalanceSugge
     .then((estimate) => gasWithBuffer(estimate, APP_CONFIG.gasLimitBufferBps))
     .catch(() => BigInt(gasFallback));
   return {
+    bridge: bridgeRouteMetadata(suggestion, state.carbon.gcotiAddress),
     chain: suggestion.sourceChain,
     description: `Bridge ${cleanAmount(suggestion.amount, 6)} ${suggestion.tokenSymbol} from ${suggestion.sourceChain} to ${suggestion.targetChain}.`,
     index: 1,
     label: `Rebalance ${suggestion.tokenSymbol}`,
     token: suggestion.tokenSymbol || "",
+    trade: {
+      action: "bridge",
+      protocol: "Bridge",
+      reviewSourceBalanceRaw: sourceBalance.raw,
+      source: tokenAmountMetadata(tokenAddress, sourceBalance.symbol, sourceBalance.decimals, amountRaw),
+    },
     tx: { from: state.owner, to, data, value: hexValue(value), gas: hexValue(gas) },
     type: "bridge-transfer",
   };
@@ -697,7 +753,9 @@ async function approvalStep(args: {
   label: string;
   provider: JsonRpcProvider;
   spender: string;
+  sourceBalanceRaw: string;
   tokenAddress: string;
+  tokenDecimals: number;
   tokenSymbol: string;
 }): Promise<PreparedStep | null> {
   if (isNativeToken(args.tokenAddress)) return null;
@@ -710,23 +768,59 @@ async function approvalStep(args: {
     index: 0,
     label: `Approve ${args.tokenSymbol}`,
     token: args.tokenSymbol,
+    trade: {
+      action: "approve",
+      protocol: args.label === "Uniswap" ? "Uniswap" : "Carbon",
+      reviewAllowanceRaw: args.allowance.raw,
+      reviewSourceBalanceRaw: args.sourceBalanceRaw,
+      source: tokenAmountMetadata(args.tokenAddress, args.tokenSymbol, args.tokenDecimals, args.amountRaw),
+      spender: args.spender,
+    },
     tx: { from: args.from, to: args.tokenAddress, data, value: "0x0", ...(gas ? { gas: hexValue(gas) } : {}) },
     type: "approval",
   };
 }
 
+export function arbLegAmounts(opportunity: Pick<Opportunity, "direction" | "summary">): { carbonSourceAmount: number; uniswapSourceAmount: number } {
+  return opportunity.direction === "buy_on_uniswap_sell_on_carbon"
+    ? {
+      carbonSourceAmount: opportunity.summary.bridgeOutputAmount,
+      uniswapSourceAmount: opportunity.summary.inputAmount,
+    }
+    : {
+      carbonSourceAmount: opportunity.summary.inputAmount,
+      uniswapSourceAmount: opportunity.summary.bridgeOutputAmount,
+    };
+}
+
+function ethSourceKey(sourceToken: string): "coti" | "gcoti" | "usdc" {
+  if (sameAddress(sourceToken, APP_CONFIG.uniswap.coti)) return "coti";
+  if (sameAddress(sourceToken, APP_CONFIG.uniswap.gcoti)) return "gcoti";
+  return "usdc";
+}
+
+function cotiTokenKey(state: WalletState, tokenAddress: string): "coti" | "gcoti" | "usdc" {
+  if (sameAddress(tokenAddress, state.carbon.gcotiAddress)) return "gcoti";
+  if (sameAddress(tokenAddress, state.carbon.usdcAddress)) return "usdc";
+  return "coti";
+}
+
 async function buildUniswapSteps(state: WalletState, opportunity: Opportunity): Promise<PreparedStep[]> {
   const path = await uniswapPath(opportunity.pairId, opportunity.direction);
   const sourceToken = path[0];
-  const sourceKey = sameAddress(sourceToken, APP_CONFIG.uniswap.coti) ? "coti" : sameAddress(sourceToken, APP_CONFIG.uniswap.gcoti) ? "gcoti" : "usdc";
+  const sourceKey = ethSourceKey(sourceToken);
   const sourceInfo = state.balances.ethereum.tokens[sourceKey];
-  const amountIn = parseTokenAmount(opportunity.summary.inputAmount, sourceInfo.decimals);
+  const amountIn = parseTokenAmount(arbLegAmounts(opportunity).uniswapSourceAmount, sourceInfo.decimals);
   const router = new Contract(APP_CONFIG.uniswap.router, UNISWAP_ROUTER_ABI, ethProvider);
   const amounts = await router.getAmountsOut(amountIn, path) as bigint[];
+  const outputToken = path[path.length - 1];
+  const outputInfo = state.balances.ethereum.tokens[ethSourceKey(outputToken)];
+  const expectedOut = amounts[amounts.length - 1];
+  const minOut = minOutRaw(expectedOut, APP_CONFIG.slippageBps);
   const deadline = Math.floor(Date.now() / 1000) + APP_CONFIG.deadlineSec;
   const data = routerInterface.encodeFunctionData("swapExactTokensForTokens", [
     amountIn,
-    minOutRaw(amounts[amounts.length - 1], APP_CONFIG.slippageBps),
+    minOut,
     path,
     state.owner,
     String(deadline),
@@ -739,16 +833,28 @@ async function buildUniswapSteps(state: WalletState, opportunity: Opportunity): 
     label: "Uniswap",
     provider: ethProvider,
     spender: APP_CONFIG.uniswap.router,
+    sourceBalanceRaw: sourceInfo.raw,
     tokenAddress: sourceToken,
+    tokenDecimals: sourceInfo.decimals,
     tokenSymbol: sourceInfo.symbol,
   });
   const gas = await ethProvider.estimateGas({ from: state.owner, to: APP_CONFIG.uniswap.router, data, value: 0 }).then((estimate) => gasWithBuffer(estimate, APP_CONFIG.gasLimitBufferBps)).catch(() => null);
+  const trade: TradeStepMetadata = {
+    action: "swap",
+    minTarget: tokenAmountMetadata(outputToken, outputInfo.symbol, outputInfo.decimals, minOut),
+    protocol: "Uniswap",
+    reviewAllowanceRaw: state.allowances.ethereum[sourceKey].raw,
+    reviewSourceBalanceRaw: sourceInfo.raw,
+    source: tokenAmountMetadata(sourceToken, sourceInfo.symbol, sourceInfo.decimals, amountIn),
+    target: tokenAmountMetadata(outputToken, outputInfo.symbol, outputInfo.decimals, expectedOut),
+  };
   return [approval, {
     chain: "ethereum",
     description: `${opportunity.action}. Minimum output includes ${APP_CONFIG.slippageBps / 100}% slippage.`,
     index: 0,
     label: "Uniswap swap",
     token: sourceInfo.symbol,
+    trade,
     tx: { from: state.owner, to: APP_CONFIG.uniswap.router, data, value: "0x0", ...(gas ? { gas: hexValue(gas) } : {}) },
     type: "uniswap-swap" as const,
   }].filter(Boolean) as PreparedStep[];
@@ -756,23 +862,28 @@ async function buildUniswapSteps(state: WalletState, opportunity: Opportunity): 
 
 function carbonLeg(state: WalletState, opportunity: Opportunity) {
   const carbon = state.carbon;
+  const amount = arbLegAmounts(opportunity).carbonSourceAmount;
   if (opportunity.pairId === "coti-usdc") {
     return opportunity.direction === "buy_on_uniswap_sell_on_carbon"
-      ? { amount: opportunity.summary.bridgeOutputAmount, key: "coti" as const, source: carbon.cotiAddress, target: carbon.usdcAddress, symbol: "COTI" }
-      : { amount: opportunity.summary.inputAmount, key: "usdc" as const, source: carbon.usdcAddress, target: carbon.cotiAddress, symbol: "USDCe" };
+      ? { amount, key: "coti" as const, source: carbon.cotiAddress, target: carbon.usdcAddress, symbol: "COTI" }
+      : { amount, key: "usdc" as const, source: carbon.usdcAddress, target: carbon.cotiAddress, symbol: "USDCe" };
   }
   return opportunity.direction === "buy_on_uniswap_sell_on_carbon"
-    ? { amount: opportunity.summary.bridgeOutputAmount, key: "gcoti" as const, source: carbon.gcotiAddress, target: carbon.cotiAddress, symbol: "gCOTI" }
-    : { amount: opportunity.summary.inputAmount, key: "coti" as const, source: carbon.cotiAddress, target: carbon.gcotiAddress, symbol: "COTI" };
+    ? { amount, key: "gcoti" as const, source: carbon.gcotiAddress, target: carbon.cotiAddress, symbol: "gCOTI" }
+    : { amount, key: "coti" as const, source: carbon.cotiAddress, target: carbon.gcotiAddress, symbol: "COTI" };
 }
 
 async function buildCarbonSteps(state: WalletState, opportunity: Opportunity): Promise<PreparedStep[]> {
   const leg = carbonLeg(state, opportunity);
   const sourceInfo = state.balances.coti.tokens[leg.key];
+  const targetKey = cotiTokenKey(state, leg.target);
+  const targetInfo = state.balances.coti.tokens[targetKey];
   const amountRaw = parseTokenAmount(leg.amount, sourceInfo.decimals);
   const quote = await state.carbon.sdk.getTradeData(leg.source, leg.target, cleanAmount(leg.amount), false);
   if (!quote.tradeActions?.length || Number(quote.totalTargetAmount) <= 0) throw new Error("Carbon quote returned no trade actions.");
   const minReturn = cleanAmount(Number(quote.totalTargetAmount) * (1 - APP_CONFIG.slippageBps / 10000));
+  const targetRaw = decimalStringToRaw(quote.totalTargetAmount, targetInfo.decimals);
+  const minReturnRaw = decimalStringToRaw(minReturn, targetInfo.decimals);
   const deadline = Math.floor(Date.now() / 1000) + APP_CONFIG.deadlineSec;
   const txRequest = await state.carbon.sdk.composeTradeBySourceTransaction(leg.source, leg.target, quote.tradeActions, deadline, minReturn);
   const nativeValue = isNativeToken(leg.source) ? amountRaw : BigInt(txRequest.value || 0);
@@ -784,26 +895,51 @@ async function buildCarbonSteps(state: WalletState, opportunity: Opportunity): P
     label: "Carbon",
     provider: cotiProvider,
     spender: APP_CONFIG.carbonController,
+    sourceBalanceRaw: sourceInfo.raw,
     tokenAddress: leg.source,
+    tokenDecimals: sourceInfo.decimals,
     tokenSymbol: leg.symbol,
   });
   const data = txRequest.data || "0x";
   const to = getAddress(String(txRequest.to || APP_CONFIG.carbonController));
   const gas = await cotiProvider.estimateGas({ from: state.owner, to, data, value: nativeValue }).then((estimate) => gasWithBuffer(estimate, APP_CONFIG.gasLimitBufferBps)).catch(() => null);
+  const trade: TradeStepMetadata = {
+    action: "swap",
+    minTarget: tokenAmountMetadata(leg.target, targetInfo.symbol, targetInfo.decimals, minReturnRaw),
+    protocol: "Carbon",
+    reviewAllowanceRaw: state.allowances.coti[leg.key].raw,
+    reviewSourceBalanceRaw: sourceInfo.raw,
+    source: tokenAmountMetadata(leg.source, sourceInfo.symbol, sourceInfo.decimals, amountRaw),
+    target: tokenAmountMetadata(leg.target, targetInfo.symbol, targetInfo.decimals, targetRaw),
+  };
   return [approval, {
     chain: "coti",
     description: `${opportunity.action}. Minimum return includes ${APP_CONFIG.slippageBps / 100}% slippage.`,
     index: 0,
     label: "Carbon swap",
     token: leg.symbol,
+    trade,
     tx: { from: state.owner, to, data, value: hexValue(nativeValue), ...(gas ? { gas: hexValue(gas) } : {}) },
     type: "carbon-swap" as const,
   }].filter(Boolean) as PreparedStep[];
 }
 
+function assertPreparedPlanAmounts(state: WalletState, opportunity: Opportunity, steps: PreparedStep[]): void {
+  const uniswapStep = steps.find((step) => step.type === "uniswap-swap");
+  if (!uniswapStep) throw new Error("Prepared plan is missing the Uniswap swap.");
+  const decoded = routerInterface.decodeFunctionData("swapExactTokensForTokens", uniswapStep.tx.data);
+  const amountIn = decoded[0] as bigint;
+  const path = decoded[2] as string[];
+  const sourceKey = ethSourceKey(path[0]);
+  const expectedAmount = parseTokenAmount(arbLegAmounts(opportunity).uniswapSourceAmount, state.balances.ethereum.tokens[sourceKey].decimals);
+  if (amountIn !== expectedAmount) {
+    throw new Error("Prepared Uniswap amount does not match the selected opportunity.");
+  }
+}
+
 export async function preparePlan(walletAddress: string, pairId: PairId): Promise<PreparedPlan> {
   const state = await loadWalletState(walletAddress);
-  const quote = await buildQuote(walletAddress);
+  const quote = await buildQuoteFromState(state);
   const opportunity = quote.opportunities.find((item) => item.pairId === pairId);
   if (!opportunity) throw new Error(`Unknown pair ${pairId}.`);
   if (!opportunity.executable) throw new Error(opportunity.reason || `${opportunity.pairLabel} is not executable.`);
@@ -813,6 +949,7 @@ export async function preparePlan(walletAddress: string, pairId: PairId): Promis
   ]);
   const steps = [...uniswap, ...carbon].map((step, index) => ({ ...step, index: index + 1 }));
   assertAllowedPlan(steps, [state.carbon.cotiAddress, state.carbon.gcotiAddress, state.carbon.usdcAddress]);
+  assertPreparedPlanAmounts(state, opportunity, steps);
   return {
     generatedAtUtc: new Date().toISOString(),
     kind: "arb",
