@@ -587,6 +587,11 @@ small {
   margin-top: 2px;
 }
 
+.token-profit {
+  color: #bbf7d0;
+  font-weight: 800;
+}
+
 .fee-summary div:last-child {
   border-color: rgba(45, 212, 191, 0.28);
   background: rgba(45, 212, 191, 0.08);

@@ -344,7 +344,6 @@ function rebalanceCandidate(state: { balances: WalletBalances }, tokenId: Rebala
       amount: 0,
       direction: null,
       executable: false,
-      reason: `${tokenSymbol} rebalance amount ${cleanAmount(needed, 6)} is below ${cleanAmount(minimum, 6)} minimum.`,
       sourceBalance: difference > 0 ? ethBalance : cotiBalance,
       targetBalance: difference > 0 ? cotiBalance : ethBalance,
       token: tokenId,

@@ -135,8 +135,8 @@ describe("rebalance summary", () => {
     const gcoti = summary.suggestions.find((item) => item.token === "gcoti");
     expect(coti).toMatchObject({
       executable: false,
-      reason: `COTI rebalance amount 20 is below ${APP_CONFIG.rebalanceMinAmounts.coti} minimum.`,
     });
+    expect(coti?.reason).toBeUndefined();
     expect(gcoti).toMatchObject({
       amount: 40,
       executable: true,

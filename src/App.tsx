@@ -665,7 +665,7 @@ function App() {
                 <button className={`opportunity ${selectedPair === pairId ? "selected" : ""} ${opportunity?.executable ? "ok" : "blocked"}`} type="button" key={pairId} onClick={() => setSelectedPair(pairId)}>
                   <span>{pairTitle(pairId)}</span>
                   <strong>{opportunity ? usdFmt(opportunity.netProfitUsd) : "not quoted"}</strong>
-                  <small>{opportunity ? `${opportunity.route} - net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Quote"}</small>
+                  <small>{opportunity ? `${numberFmt(opportunity.summary.profitTokenAmount)} ${opportunity.summary.profitTokenSymbol} profit - net ${usdFmt(opportunity.netProfitAfterFeesUsd)}` : "Quote"}</small>
                 </button>
               );
             })}
@@ -690,7 +690,7 @@ function App() {
                 <div>
                   <span>Profit</span>
                   <strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong>
-                  <small>{numberFmt(selectedOpportunity.summary.profitTokenAmount)} {selectedOpportunity.summary.profitTokenSymbol}</small>
+                  <small className="token-profit">Token profit {numberFmt(selectedOpportunity.summary.profitTokenAmount)} {selectedOpportunity.summary.profitTokenSymbol}</small>
                 </div>
                 <div><span>Fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
                 <div><span>Net</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
@@ -772,7 +772,7 @@ function App() {
             </div>
             {rebalance?.suggestions.map((suggestion) => (
               <div className={`rebalance-details ${suggestion.executable ? "" : "muted-row"} ${suggestion.token && selectedRebalanceTokens.includes(suggestion.token) ? "" : "unselected"}`} key={suggestion.token || suggestion.tokenSymbol || suggestion.reason}>
-                <span>{suggestion.executable ? `${suggestion.sourceChain} -> ${suggestion.targetChain}` : suggestion.reason}</span>
+                <span>{suggestion.executable ? `${suggestion.sourceChain} -> ${suggestion.targetChain}` : suggestion.reason || "No action"}</span>
                 <strong>{suggestion.executable ? `${numberFmt(suggestion.amount)} ${suggestion.tokenSymbol}` : suggestion.tokenSymbol}</strong>
                 <small>{suggestion.token && selectedRebalanceTokens.includes(suggestion.token) ? suggestion.executable ? "selected" : "no action" : "skipped"}</small>
               </div>
