@@ -434,10 +434,10 @@ function balanceBlocker(label: string, required: number, available: number): str
   return `Insufficient ${label}: need ${required.toFixed(4)}, available ${available.toFixed(4)}.`;
 }
 
-function firstBlocker(blockers: Array<string | null>, thresholdOk: boolean): string | undefined {
+export function opportunityBlocker(blockers: Array<string | null>, netProfitAfterFeesUsd: number): string | undefined {
   const balanceIssue = blockers.find((item): item is string => !!item);
   if (balanceIssue) return balanceIssue;
-  return thresholdOk ? undefined : "Net after estimated fees is below threshold.";
+  return netProfitAfterFeesUsd > 0 ? undefined : "Net after estimated fees is not positive.";
 }
 
 function needsApproval(allowanceState: AllowanceState, amount: number, decimals: number): boolean {
@@ -566,12 +566,11 @@ function makeOpportunity(
   // number is market profit before wallet gas. Gas is shown separately in details.
   const netProfitUsd = grossProfitUsd;
   const netProfitAfterFeesUsd = grossProfitUsd - gasUsd;
-  const thresholdOk = netProfitAfterFeesUsd >= APP_CONFIG.minNetProfitUsd;
-  const reason = firstBlocker(balanceBlockers, thresholdOk);
+  const reason = opportunityBlocker(balanceBlockers, netProfitAfterFeesUsd);
   const warnings = [
     "Uniswap executes first. If Carbon fails, the first transaction remains final.",
   ];
-  if (!thresholdOk) warnings.unshift(`Net after estimated fees is below $${APP_CONFIG.minNetProfitUsd}.`);
+  if (netProfitAfterFeesUsd <= 0) warnings.unshift("Net after estimated fees is not positive.");
   for (const blocker of balanceBlockers.filter((item): item is string => !!item)) warnings.unshift(blocker);
   return {
     action: direction === "buy_on_uniswap_sell_on_carbon" ? `Buy ${bridgeOutputSymbol} on Uniswap, sell on Carbon` : `Buy ${bridgeOutputSymbol} on Carbon, sell on Uniswap`,

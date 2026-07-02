@@ -39,6 +39,7 @@ select {
 }
 
 button {
+  min-width: 0;
   min-height: 40px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -278,8 +279,7 @@ small {
 
 .access-blocked,
 .warning,
-.warning-list,
-.route-note {
+.warning-list {
   border-radius: 8px;
   padding: 8px 9px;
   margin: 7px 0;
@@ -310,12 +310,6 @@ small {
 .warning-list p {
   margin: 0;
   color: #fde68a;
-}
-
-.route-note {
-  border: 1px solid rgba(34, 197, 94, 0.22);
-  color: #bbf7d0;
-  background: rgba(34, 197, 94, 0.06);
 }
 
 .button-row {
@@ -424,6 +418,19 @@ small {
 
 .bridge-card {
   border-color: rgba(248, 189, 69, 0.28);
+}
+
+.bridge-head-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.bridge-head-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.78rem;
 }
 
 .bridge-list {
@@ -691,11 +698,26 @@ small {
 
 @media (max-width: 680px) {
   .app {
-    padding: 8px;
+    padding: 6px;
+  }
+
+  button,
+  select {
+    min-height: 36px;
+  }
+
+  button {
+    padding: 0 10px;
+    font-size: 0.86rem;
   }
 
   .topbar {
     align-items: flex-start;
+    padding-bottom: 6px;
+  }
+
+  h1 {
+    font-size: 1.55rem;
   }
 
   .panel-head,
@@ -705,17 +727,27 @@ small {
 
   .top-status {
     justify-items: end;
-    max-width: 48%;
+    max-width: 34%;
     margin-top: 0;
     text-align: right;
   }
 
+  .top-status small {
+    display: none;
+  }
+
+  .status {
+    min-width: 54px;
+    padding: 4px 6px;
+  }
+
   .steps {
-    gap: 4px;
+    gap: 3px;
+    margin-bottom: 6px;
   }
 
   .step {
-    padding: 4px;
+    padding: 3px;
   }
 
   .step strong {
@@ -733,7 +765,7 @@ small {
   }
 
   .action-buttons {
-    grid-template-columns: 1fr 0.78fr 0.85fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .numbers,
@@ -747,6 +779,55 @@ small {
 
   .button-row {
     grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    margin-top: 6px;
+  }
+
+  .panel,
+  .review-card,
+  .rebalance-card,
+  .bridge-card,
+  .sign-card,
+  .balances-collapse {
+    padding: 8px;
+  }
+
+  .review-card,
+  .rebalance-card,
+  .bridge-card,
+  .sign-card,
+  .balances-collapse {
+    margin-top: 6px;
+  }
+
+  .opportunities,
+  .numbers,
+  .fee-summary,
+  .balances-grid,
+  .tx-list,
+  .bridge-list {
+    gap: 5px;
+  }
+
+  .opportunity {
+    min-height: 58px;
+    padding: 8px;
+  }
+
+  .opportunity strong {
+    font-size: 1rem;
+  }
+
+  .opportunity small {
+    font-size: 0.68rem;
+  }
+
+  .numbers div,
+  .fee-summary div,
+  .tx-row,
+  .bridge-item,
+  .rebalance-details {
+    padding: 7px;
   }
 
   .rebalance-details {
@@ -766,8 +847,9 @@ small {
     margin-top: 6px;
   }
 
-  .opportunity {
-    min-height: 70px;
+  .bridge-head-actions {
+    justify-content: space-between;
+    margin-top: 6px;
   }
 
   .numbers span,

@@ -3,6 +3,7 @@ import {
   bridgeTrackingItemFromImport,
   bridgeTrackingItemFromStep,
   cleanupBridgeTrackingItems,
+  fetchBridgeTrackingItem,
   fetchRecentBridgeTrackingItems,
   loadBridgeTrackingItems,
   markBridgeTrackingFailed,
@@ -51,12 +52,58 @@ function item(overrides: Partial<BridgeTrackingItem> = {}): BridgeTrackingItem {
 }
 
 describe("bridge tracker status", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("normalizes official tracker statuses", () => {
     expect(normalizeBridgeStatus("Done")).toBe("done");
     expect(normalizeBridgeStatus("Failed")).toBe("failed");
     expect(normalizeBridgeStatus("In_Progress")).toBe("in_progress");
     expect(normalizeBridgeStatus("Refunded")).toBe("refunded");
     expect(normalizeBridgeStatus("surprise")).toBe("unknown");
+  });
+
+  it("treats a failed tracker row with a delivered destination hash as done", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      overall_status: "Failed",
+      stages: [
+        {
+          completed: true,
+          description: "Sending transaction.",
+          raw_response: { transaction_hash: "0xarrival" },
+          status: "Failed",
+          step_id: 4,
+          system_name: "Hot-Wallet",
+        },
+      ],
+    }))));
+
+    const refreshed = await fetchBridgeTrackingItem(item({ status: "failed" }));
+    expect(refreshed.status).toBe("done");
+    expect(refreshed.destinationHash).toBe("0xarrival");
+    expect(refreshed.overallStatus).toBe("Failed");
+  });
+
+  it("keeps failed status when the tracker includes explicit error details", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      overall_status: "Failed",
+      stages: [
+        {
+          completed: true,
+          description: "Sending transaction.",
+          error_details: "Destination send reverted.",
+          raw_response: { transaction_hash: "0xarrival" },
+          status: "Failed",
+          step_id: 4,
+          system_name: "Hot-Wallet",
+        },
+      ],
+    }))));
+
+    const refreshed = await fetchBridgeTrackingItem(item({ status: "failed" }));
+    expect(refreshed.status).toBe("failed");
+    expect(refreshed.destinationHash).toBe("0xarrival");
   });
 });
 

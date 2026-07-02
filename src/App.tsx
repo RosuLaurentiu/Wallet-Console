@@ -18,7 +18,7 @@ import { checkPreparedStepBeforeSigning, preSignWarningText } from "./arb/preSig
 import { quoteReviewWarnings } from "./arb/reviewWarnings";
 import { waitForTransactionReceipt } from "./arb/receipts";
 import { tradeSummaryText } from "./arb/tradeMetadata";
-import type { PairId, PreparedWalletPlan, QuoteResult, RebalanceSuggestion, RebalanceSummary, RebalanceTokenId, WalletBalances, WalletInventoryState } from "./arb/types";
+import type { PairId, PreparedStep, PreparedWalletPlan, QuoteResult, RebalanceSuggestion, RebalanceSummary, RebalanceTokenId, WalletBalances, WalletInventoryState } from "./arb/types";
 import { connectProvider, currentAccount, discoverProviders, switchChain, type ProviderEntry } from "./arb/wallet";
 import { explorerTx, isAllowedWallet, numberFmt, sameAddress, shortAddress, usdFmt } from "./arb/utils";
 import "./index.css";
@@ -139,6 +139,69 @@ function appendUnique(items: string[], incoming: string[]): string[] {
   return Array.from(new Set([...items, ...incoming]));
 }
 
+function bridgeSummary(activeCount: number, failedCount: number, totalCount: number, fallback: string): string {
+  if (activeCount) return `${activeCount} active`;
+  if (failedCount) return `${failedCount} review`;
+  if (totalCount) return `${totalCount} history`;
+  return fallback;
+}
+
+function SignatureCard({
+  flow,
+  prepared,
+  preparedStepByIndex,
+  preparedWarnings,
+  progress,
+  sign,
+  signWarnings,
+}: {
+  flow: FlowState;
+  prepared: PreparedWalletPlan;
+  preparedStepByIndex: Map<number, PreparedStep>;
+  preparedWarnings: Array<{ message: string }>;
+  progress: TxProgress[];
+  sign: () => void;
+  signWarnings: string[];
+}) {
+  return (
+    <div className="sign-card">
+      <div className="review-head">
+        <div>
+          <h3>Signatures</h3>
+          <p>{prepared.warning}</p>
+        </div>
+        <button className="danger" type="button" onClick={sign} disabled={flow === "signing"}>Start</button>
+      </div>
+      {preparedWarnings.length ? (
+        <div className="warning-list">
+          {preparedWarnings.map((warning) => <p key={warning.message}>{warning.message}</p>)}
+        </div>
+      ) : null}
+      {signWarnings.length ? (
+        <div className="warning-list">
+          {signWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+        </div>
+      ) : null}
+      <div className="tx-list">
+        {progress.map((item) => {
+          const step = preparedStepByIndex.get(item.index);
+          return (
+            <div className={`tx-row ${item.status}`} key={item.index}>
+              <span>{item.index}</span>
+              <div>
+                <strong>{item.label}</strong>
+                {step?.trade ? <small className="trade-line">{tradeSummaryText(step.trade)}</small> : null}
+                <small>{item.message}</small>
+                {item.hash && item.chain ? <a href={explorerTx(item.chain, item.hash)} target="_blank" rel="noreferrer">{shortAddress(item.hash)}</a> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [providerId, setProviderId] = useState("");
@@ -160,6 +223,7 @@ function App() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showBalances, setShowBalances] = useState(false);
+  const [showBridgeTracking, setShowBridgeTracking] = useState(false);
 
   const selectedProvider = useMemo(
     () => providers.find((entry) => entry.id === providerId) || providers[0] || null,
@@ -186,6 +250,10 @@ function App() {
   );
   const activeBridges = useMemo(() => trackedBridges.filter((item) => !isBridgeResolved(item)), [trackedBridges]);
   const resolvedBridges = useMemo(() => trackedBridges.filter(isBridgeResolved), [trackedBridges]);
+  const visibleTrackedBridges = useMemo(() => {
+    const unfinished = activeBridges.slice(0, 2);
+    return unfinished.length ? unfinished : trackedBridges.slice(0, 2);
+  }, [activeBridges, trackedBridges]);
   const failedBridgeCount = useMemo(() => trackedBridges.filter((item) => item.status === "failed" || item.status === "refunded").length, [trackedBridges]);
   const rebalanceBlockedByBridge = activeBridges.length > 0;
   const preparedWarnings = prepared?.kind === "arb" ? prepared.reviewWarnings || [] : [];
@@ -238,7 +306,7 @@ function App() {
       return stored;
     }
     const refreshed = await Promise.all(relevant.map(async (item) => (
-      isBridgeResolved(item)
+      item.status === "done" || item.status === "refunded"
         ? item
         : fetchBridgeTrackingItem(item).catch((error) => markBridgeTrackingError(item, error))
     )));
@@ -604,6 +672,7 @@ function App() {
           </div>
 
           {selectedOpportunity ? (
+            <>
             <div className="review-card">
               <div className="review-head">
                 <div>
@@ -619,10 +688,9 @@ function App() {
               </div>
               <div className="fee-summary">
                 <div><span>Profit</span><strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong></div>
-                <div><span>Estimated fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
-                <div><span>Net after fees</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
+                <div><span>Fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
+                <div><span>Net</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
               </div>
-              <div className="route-note">Uniswap first. Carbon second. No bridge.</div>
               {quotePreviewWarnings.length ? (
                 <div className="warning-list">
                   {quotePreviewWarnings.map((warning) => <p key={warning.message}>{warning.message}</p>)}
@@ -634,9 +702,19 @@ function App() {
                 <button type="button" onClick={() => setShowAdvanced((value) => !value)}>{showAdvanced ? "Hide details" : "Details"}</button>
               </div>
             </div>
-          ) : (
-            <div className="empty">Connect wallet and quote.</div>
-          )}
+            {prepared?.kind === "arb" ? (
+              <SignatureCard
+                flow={flow}
+                prepared={prepared}
+                preparedStepByIndex={preparedStepByIndex}
+                preparedWarnings={preparedWarnings}
+                progress={progress}
+                sign={sign}
+                signWarnings={signWarnings}
+              />
+            ) : null}
+            </>
+          ) : null}
 
           <section className="balances-collapse">
             <button type="button" onClick={() => setShowBalances((value) => !value)}>
@@ -663,9 +741,7 @@ function App() {
                     </div>
                   </div>
                 </>
-              ) : (
-                <p className="muted">Balances appear after connecting.</p>
-              )
+              ) : null
             ) : null}
           </section>
 
@@ -697,100 +773,75 @@ function App() {
                 <small>{suggestion.token && selectedRebalanceTokens.includes(suggestion.token) ? suggestion.executable ? "selected" : "no action" : "skipped"}</small>
               </div>
             ))}
-            {!rebalance ? <p className="muted">Balances appear after connecting or refreshing.</p> : null}
             <div className="button-row">
               <button className="primary" type="button" onClick={reviewRebalance} disabled={!account || !allowed || !selectedRebalanceExecutable || rebalanceBlockedByBridge || flow === "loading" || flow === "signing"}>Rebalance</button>
               <button type="button" onClick={() => { void refreshInventory(); }} disabled={!account || !allowed || inventoryLoading || flow === "loading" || flow === "signing"}>{inventoryLoading ? "Refreshing" : "Refresh balances"}</button>
             </div>
           </section>
 
+          {prepared?.kind === "rebalance" ? (
+            <SignatureCard
+              flow={flow}
+              prepared={prepared}
+              preparedStepByIndex={preparedStepByIndex}
+              preparedWarnings={[]}
+              progress={progress}
+              sign={sign}
+              signWarnings={signWarnings}
+            />
+          ) : null}
+
           <section className="bridge-card">
             <div className="review-head">
               <div>
                 <h3>Bridge tracking</h3>
-                <p>{activeBridges.length
-                  ? "Waiting for bridge arrival."
-                  : failedBridgeCount
-                    ? `${failedBridgeCount} failed or refunded bridge transfer${failedBridgeCount === 1 ? "" : "s"} in history.`
-                    : trackedBridges.length
-                      ? "No unresolved bridge transfers."
-                      : bridgeHistoryMessage}</p>
+                <p>{bridgeSummary(
+                  activeBridges.length,
+                  failedBridgeCount,
+                  trackedBridges.length,
+                  bridgeHistoryLoading ? "Checking tracker" : bridgeHistoryMessage,
+                )}</p>
               </div>
-              <span className={activeBridges.length ? "pill blocked" : failedBridgeCount ? "pill warn" : trackedBridges.length ? "pill ok" : "pill"}>{activeBridges.length ? "active" : failedBridgeCount ? "review" : trackedBridges.length ? "resolved" : "history"}</span>
+              <div className="bridge-head-actions">
+                <span className={activeBridges.length ? "pill blocked" : failedBridgeCount ? "pill warn" : trackedBridges.length ? "pill ok" : "pill"}>{activeBridges.length ? "active" : failedBridgeCount ? "review" : trackedBridges.length ? "history" : "idle"}</span>
+                <button type="button" onClick={() => setShowBridgeTracking((value) => !value)}>{showBridgeTracking ? "Hide" : "Show"}</button>
+              </div>
             </div>
-            {trackedBridges.length ? (
-              <div className="bridge-list">
-                {trackedBridges.map((item) => (
-                  <div className={`bridge-item ${item.status}`} key={item.id}>
-                    <div className="bridge-item-head">
-                      <div>
-                        <strong>{item.tokenSymbol} {item.sourceChain} {"->"} {item.targetChain}</strong>
-                        <small>{numberFmt(item.amount)} {item.tokenSymbol}</small>
-                      </div>
-                      <span className={`pill ${bridgeStatusPillClass(item.status)}`}>{bridgeStatusLabel(item.status)}</span>
-                    </div>
-                    <small>{bridgeStatusText(item)}</small>
-                    <div className="bridge-stages">
-                      {bridgeStageRows(item).map((stage) => (
-                        <div className={`bridge-stage ${stage.state}`} key={stage.key}>
-                          <span>{stage.label}</span>
-                          <small>{stage.detail}</small>
+            {showBridgeTracking ? (
+              visibleTrackedBridges.length ? (
+                <div className="bridge-list">
+                  {visibleTrackedBridges.map((item) => (
+                    <div className={`bridge-item ${item.status}`} key={item.id}>
+                      <div className="bridge-item-head">
+                        <div>
+                          <strong>{item.tokenSymbol} {item.sourceChain} {"->"} {item.targetChain}</strong>
+                          <small>{numberFmt(item.amount)} {item.tokenSymbol}</small>
                         </div>
-                      ))}
+                        <span className={`pill ${bridgeStatusPillClass(item.status)}`}>{bridgeStatusLabel(item.status)}</span>
+                      </div>
+                      <small>{bridgeStatusText(item)}</small>
+                      <div className="bridge-stages">
+                        {bridgeStageRows(item).map((stage) => (
+                          <div className={`bridge-stage ${stage.state}`} key={stage.key}>
+                            <span>{stage.label}</span>
+                            <small>{stage.detail}</small>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="bridge-links">
+                        <a href={explorerTx(item.sourceChain, item.hash)} target="_blank" rel="noreferrer">source {shortAddress(item.hash)}</a>
+                        {item.destinationHash ? <a href={explorerTx(item.targetChain, item.destinationHash)} target="_blank" rel="noreferrer">arrival {shortAddress(item.destinationHash)}</a> : null}
+                      </div>
                     </div>
-                    <div className="bridge-links">
-                      <a href={explorerTx(item.sourceChain, item.hash)} target="_blank" rel="noreferrer">source {shortAddress(item.hash)}</a>
-                      {item.destinationHash ? <a href={explorerTx(item.targetChain, item.destinationHash)} target="_blank" rel="noreferrer">arrival {shortAddress(item.destinationHash)}</a> : null}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted">{bridgeHistoryLoading ? "Checking tracker..." : "Recent bridge transfers will appear here after the tracker responds."}</p>
-            )}
+                  ))}
+                </div>
+              ) : null
+            ) : null}
             <div className="button-row">
               <button type="button" onClick={() => { void refreshTrackedBridges(trackingWallet, true); }} disabled={bridgeHistoryLoading || flow === "signing"}>{bridgeHistoryLoading ? "Loading history" : "Refresh tracking"}</button>
               <button type="button" onClick={clearResolvedBridges} disabled={!resolvedBridges.length || flow === "signing"}>Clear resolved</button>
             </div>
           </section>
-
-          {prepared ? (
-            <div className="sign-card">
-              <div className="review-head">
-                <div>
-                  <h3>Signature steps</h3>
-                  <p>{prepared.warning}</p>
-                </div>
-                <button className="danger" type="button" onClick={sign} disabled={flow === "signing"}>Start signatures</button>
-              </div>
-              {preparedWarnings.length ? (
-                <div className="warning-list">
-                  {preparedWarnings.map((warning) => <p key={warning.message}>{warning.message}</p>)}
-                </div>
-              ) : null}
-              {signWarnings.length ? (
-                <div className="warning-list">
-                  {signWarnings.map((warning) => <p key={warning}>{warning}</p>)}
-                </div>
-              ) : null}
-              <div className="tx-list">
-                {progress.map((item) => {
-                  const step = preparedStepByIndex.get(item.index);
-                  return (
-                    <div className={`tx-row ${item.status}`} key={item.index}>
-                      <span>{item.index}</span>
-                      <div>
-                        <strong>{item.label}</strong>
-                        {step?.trade ? <small className="trade-line">{tradeSummaryText(step.trade)}</small> : null}
-                        <small>{item.message}</small>
-                        {item.hash && item.chain ? <a href={explorerTx(item.chain, item.hash)} target="_blank" rel="noreferrer">{shortAddress(item.hash)}</a> : null}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
 
           {showAdvanced ? (
             <pre className="advanced">{JSON.stringify({ quote, inventory, prepared, trackedBridges }, null, 2)}</pre>

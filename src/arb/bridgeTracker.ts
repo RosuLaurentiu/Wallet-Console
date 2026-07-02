@@ -300,6 +300,16 @@ function destinationHashFromStages(stages: TrackingResponse["stages"]): string |
   return undefined;
 }
 
+function hasExplicitStageError(stages: TrackingResponse["stages"]): boolean {
+  return (stages || []).some((stage) => Boolean(stage.error_details) || String(stage.status || "").toLowerCase() === "error");
+}
+
+function normalizedTrackingStatus(data: TrackingResponse, destinationHash: string | undefined): BridgeTrackingStatus {
+  const status = normalizeBridgeStatus(data.overall_status);
+  if (status === "failed" && destinationHash && !hasExplicitStageError(data.stages)) return "done";
+  return status;
+}
+
 function normalizeStages(stages: TrackingResponse["stages"]): BridgeTrackingStage[] {
   return (stages || []).map((stage, index) => ({
     completed: Boolean(stage.completed),
@@ -362,13 +372,14 @@ export async function fetchBridgeTrackingItem(item: BridgeTrackingItem): Promise
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   const data = await response.json() as TrackingResponse;
   const stages = normalizeStages(data.stages);
+  const destinationHash = destinationHashFromStages(data.stages) || item.destinationHash;
   return {
     ...item,
-    destinationHash: destinationHashFromStages(data.stages) || item.destinationHash,
+    destinationHash,
     error: undefined,
     overallStatus: data.overall_status,
     stages,
-    status: normalizeBridgeStatus(data.overall_status),
+    status: normalizedTrackingStatus(data, destinationHash),
     updatedAtUtc: new Date().toISOString(),
   };
 }

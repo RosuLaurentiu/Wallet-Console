@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { APP_CONFIG, ZERO_ADDRESS } from "./config";
-import { arbLegAmounts, bridgeRouteMetadata, buildRebalanceSummary, selectRebalanceSuggestions } from "./engine";
+import { arbLegAmounts, bridgeRouteMetadata, buildRebalanceSummary, opportunityBlocker, selectRebalanceSuggestions } from "./engine";
 import type { Opportunity, RebalanceSuggestion, TokenBalance, WalletBalances } from "./types";
 
 function opportunity(direction: Opportunity["direction"], inputAmount: number, bridgeOutputAmount: number): Pick<Opportunity, "direction" | "summary"> {
@@ -91,6 +91,21 @@ describe("arb leg amounts", () => {
     const amounts = arbLegAmounts(opportunity("buy_on_uniswap_sell_on_carbon", 500, 1200));
     expect(amounts.uniswapSourceAmount).toBe(500);
     expect(amounts.carbonSourceAmount).toBe(1200);
+  });
+});
+
+describe("arb net eligibility", () => {
+  it("allows any positive net after fees", () => {
+    expect(opportunityBlocker([], 0.01)).toBeUndefined();
+  });
+
+  it("blocks zero or negative net after fees", () => {
+    expect(opportunityBlocker([], 0)).toBe("Net after estimated fees is not positive.");
+    expect(opportunityBlocker([], -0.01)).toBe("Net after estimated fees is not positive.");
+  });
+
+  it("does not use the old ten dollar warning", () => {
+    expect(opportunityBlocker([], 9.99)).toBeUndefined();
   });
 });
 
