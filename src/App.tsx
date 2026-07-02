@@ -687,7 +687,11 @@ function App() {
                 <div><span>Output</span><strong>{numberFmt(selectedOpportunity.summary.outputAmount)} {selectedOpportunity.summary.outputSymbol}</strong></div>
               </div>
               <div className="fee-summary">
-                <div><span>Profit</span><strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong></div>
+                <div>
+                  <span>Profit</span>
+                  <strong>{usdFmt(selectedOpportunity.netProfitUsd)}</strong>
+                  <small>{numberFmt(selectedOpportunity.summary.profitTokenAmount)} {selectedOpportunity.summary.profitTokenSymbol}</small>
+                </div>
                 <div><span>Fees</span><strong>{usdFmt(selectedOpportunity.estimatedFeesUsd)}</strong></div>
                 <div><span>Net</span><strong>{usdFmt(selectedOpportunity.netProfitAfterFeesUsd)}</strong></div>
               </div>
