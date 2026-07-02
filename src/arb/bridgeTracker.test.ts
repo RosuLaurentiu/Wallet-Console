@@ -85,6 +85,24 @@ describe("bridge tracker status", () => {
     expect(refreshed.overallStatus).toBe("Failed");
   });
 
+  it("treats an in-progress tracker row with a delivered destination hash as done", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      overall_status: "In_Progress",
+      stages: [
+        {
+          completed: true,
+          raw_response: { transaction_hash: "0xarrival" },
+          status: "success",
+          step_id: 4,
+          system_name: "Hot-Wallet",
+        },
+      ],
+    }))));
+
+    const refreshed = await fetchBridgeTrackingItem(item({ status: "in_progress" }));
+    expect(refreshed.status).toBe("done");
+  });
+
   it("keeps failed status when the tracker includes explicit error details", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       overall_status: "Failed",

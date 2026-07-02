@@ -306,7 +306,7 @@ function hasExplicitStageError(stages: TrackingResponse["stages"]): boolean {
 
 function normalizedTrackingStatus(data: TrackingResponse, destinationHash: string | undefined): BridgeTrackingStatus {
   const status = normalizeBridgeStatus(data.overall_status);
-  if (status === "failed" && destinationHash && !hasExplicitStageError(data.stages)) return "done";
+  if (status !== "refunded" && destinationHash && !hasExplicitStageError(data.stages)) return "done";
   return status;
 }
 

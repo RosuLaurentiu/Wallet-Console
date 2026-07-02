@@ -251,9 +251,9 @@ function App() {
   const activeBridges = useMemo(() => trackedBridges.filter((item) => !isBridgeResolved(item)), [trackedBridges]);
   const resolvedBridges = useMemo(() => trackedBridges.filter(isBridgeResolved), [trackedBridges]);
   const visibleTrackedBridges = useMemo(() => {
-    const unfinished = activeBridges.slice(0, 2);
-    return unfinished.length ? unfinished : trackedBridges.slice(0, 2);
-  }, [activeBridges, trackedBridges]);
+    const historyLimit = activeBridges.length ? 4 : 6;
+    return [...activeBridges, ...resolvedBridges.slice(0, historyLimit)];
+  }, [activeBridges, resolvedBridges]);
   const failedBridgeCount = useMemo(() => trackedBridges.filter((item) => item.status === "failed" || item.status === "refunded").length, [trackedBridges]);
   const rebalanceBlockedByBridge = activeBridges.length > 0;
   const preparedWarnings = prepared?.kind === "arb" ? prepared.reviewWarnings || [] : [];
